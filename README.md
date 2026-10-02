@@ -4,7 +4,7 @@ Spec → plan → tasks → build → review for Claude Code, where every gate i
 
 Think of a building contract. You sign the blueprint (**spec**). An architect draws the plans (**plan**) and the work schedule (**tasks**). Builders build one room at a time; an inspector checks each room against the blueprint; nothing is signed except by you. If you change your mind mid-build you don't scribble on the blueprint: you issue a **change order** (a change request), and the schedule is re-cut around the rooms already built.
 
-Works in any git repository and any language. The only repo-specific setting is the command that says "the repo is healthy" (`VERIFY_CMD`, e.g. `make verify`).
+Works in any git repository and any language. The only repo-specific setting is the command that says "the repo is healthy" (`VERIFY_CMD`, e.g. `npm run lint && npm test` or `go vet ./... && go test ./...`). It has no default: `/implement` refuses to start until you set it, and `loop.sh suggest-verify` guesses one from your repo.
 
 ---
 
@@ -43,7 +43,7 @@ Everything else is a status check: `.claude/scripts/loop.sh status` (or `! .clau
 
 | Platform | Status |
 |---|---|
-| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils, git 2.43) | **Tested.** `selftest.sh` passes 90/90 checks, and a full end-to-end run in Claude Code 2.1.287 (spec → plan → tasks → implement → `/amend` → rework → PASS), with all agents on haiku. |
+| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils, git 2.43) | **Tested.** `selftest.sh` passes 103/103 checks, and a full end-to-end run in Claude Code 2.1.287 (spec → plan → tasks → implement → `/amend` → rework → PASS), with all agents on haiku. |
 | macOS (bash 3.2, BSD awk/sed/grep) | **Not tested.** The scripts avoid bash-4 features and GNU-only flags, and mawk (a strict POSIX awk) passed, but nobody has run it on a Mac yet. Run `./selftest.sh` once; it needs no model calls and prints any check that fails. |
 | Windows | **Not tested, not supported natively.** Use WSL. Git Bash might work. |
 | Claude Code desktop app / IDE extensions / cloud sessions | **Not tested.** They use the same hooks and settings, so they should behave the same, but only the CLI was exercised. |
@@ -53,13 +53,14 @@ Everything else is a status check: `.claude/scripts/loop.sh status` (or `! .clau
 git clone <this kit> ~/agent-loop-kit        # or unzip it
 ~/agent-loop-kit/install.sh /path/to/your/repo
 cd /path/to/your/repo
-$EDITOR .claude/loop.conf                    # set VERIFY_CMD (and TEST_CMD if you like)
+.claude/scripts/loop.sh suggest-verify       # a guess from package.json / go.mod / Makefile / ...
+$EDITOR .claude/loop.conf                    # set VERIFY_CMD (required), TEST_CMD if you like
 git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
 .claude/scripts/loop.sh doctor               # every line should say ok
 claude                                       # from the repo root; accept the workspace-trust prompt
 ```
 
-Optional: `~/agent-loop-kit/selftest.sh` exercises every gate, check and hook in a throwaway repo, with simulated agents and no model calls. It takes about 15 seconds, needs `python3` and `make`, and should print `all 90 checks passed`. Run it once on your machine (it's the quickest way to catch a platform difference, e.g. macOS bash 3.2 or BSD tools).
+Optional: `~/agent-loop-kit/selftest.sh` exercises every gate, check and hook in a throwaway repo, with simulated agents and no model calls. It takes about 15 seconds, needs `python3` and `make`, and should print `all 103 checks passed`. Run it once on your machine (it's the quickest way to catch a platform difference, e.g. macOS bash 3.2 or BSD tools).
 
 `install.sh` is idempotent (re-run it to upgrade). It copies `.claude/{agents,skills,hooks,scripts,templates}`, keeps an existing `loop.conf`, **merges** `.claude/settings.json` (your keys stay; rules and hooks are added once), and adds `.agent-loop/`, `.claude/worktrees/` and `.claude/agent-loop-backup-*/` to `.gitignore`. Anything it would overwrite, including the old `/run-feature` command and `agent-bash-guard.sh`, goes to `.claude/agent-loop-backup-<timestamp>/`.
 
@@ -255,6 +256,7 @@ specs/NNN-slug/        spec.md | brief.md, plan.md, tasks.md, research.md, chang
 | `lineage` | supersedes chain |
 | `verify`, `test <args>` | Run `VERIFY_CMD` / `TEST_CMD` |
 | `doctor` | Setup check |
+| `suggest-verify` | Guess a `VERIFY_CMD` from the repo root: a Makefile `verify:` target wins; otherwise `package.json` scripts (`typecheck`, `lint`, `build`, `test`, with the package manager from the lockfile), `go.mod`, `Cargo.toml`, `pyproject.toml`/`setup.py`, joined with `&&`. A guess only: read it before you paste it. |
 | `unlock` | Release a run lock left by a crashed session |
 | `new`, `gate`, `start`, `next`, `log`, `stop`, `finish`, `task`, `review-info`, `findings`, `post-check`, `cr-new`, `resolve` | Used by the skills and agents |
 
@@ -262,7 +264,7 @@ specs/NNN-slug/        spec.md | brief.md, plan.md, tasks.md, research.md, chang
 
 | Key | Default | Meaning |
 |---|---|---|
-| `VERIFY_CMD` | `make verify` | Tests + lint + build. Must not modify files. |
+| `VERIFY_CMD` | empty (**required**) | Tests + lint + build; exit 0 = green. Must not modify files. Empty = `/implement` refuses to start, `doctor` fails and `loop.sh verify` is red, never a silent pass. |
 | `TEST_CMD` | empty | Lets agents run a subset: `loop.sh test ./pkg -run TestX` |
 | `BASE_BRANCH` | auto | origin/HEAD, then main, master, trunk, develop |
 | `MAX_FIX_ROUNDS` | 2 | Per task |

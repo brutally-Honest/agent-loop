@@ -7,6 +7,8 @@
 set -uo pipefail
 KIT=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/agent-loop-selftest.XXXXXX")
+X=$(mktemp -d "${TMPDIR:-/tmp}/agent-loop-selftest-x.XXXXXX") # scratch outside the test repo
+trap 'rm -rf "$X"' EXIT
 pass=0 fail=0
 ok()   { if "$@" >/dev/null 2>&1; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL (expected success): $*"; fi; }
 bad()  { if "$@" >/dev/null 2>&1; then fail=$((fail+1)); echo "FAIL (expected refusal): $*"; else pass=$((pass+1)); fi; }
@@ -18,7 +20,25 @@ echo 'add() { echo $(( $1 + $2 )); }' > src/calc.sh
 printf '. ./src/calc.sh\n[ "$(add 2 3)" = 5 ] || exit 1\n' > tests/calc_test.sh
 printf 'verify:\n\t@for t in tests/*_test.sh; do sh $$t || exit 1; done\n' > Makefile
 git add -A && git commit -qm init
-"$KIT/install.sh" . >/dev/null || { echo "install failed"; exit 1; }
+inst=$("$KIT/install.sh" .) || { echo "install failed"; exit 1; }
+
+echo "== VERIFY_CMD: no default, never a silent green"
+has "install prints the suggestion" "$inst" 'Suggested for this repo: VERIFY_CMD="make verify"'
+has "suggest-verify: Makefile verify target" "$(.claude/scripts/loop.sh suggest-verify)" "^make verify$"
+bad .claude/scripts/loop.sh doctor
+has "doctor names the fix" "$(.claude/scripts/loop.sh doctor)" 'FAIL  VERIFY_CMD is not set'
+bad .claude/scripts/loop.sh verify
+sv() { # files... -> suggestion from a scratch repo holding those files
+	local d; d=$(mktemp -d "$X/sv.XXXXXX"); (cd "$d" && git init -q && for f in "$@"; do case $f in *=*) printf '%s\n' "${f#*=}" > "${f%%=*}" ;; *) : > "$f" ;; esac; done && "$KIT/.claude/scripts/loop.sh" suggest-verify)
+}
+has "suggest: pnpm scripts in fixed order, npm placeholder test skipped" \
+	"$(sv 'package.json={"scripts":{"test":"vitest run","build":"tsc","lint":"eslint ."}}' pnpm-lock.yaml)" '^pnpm run lint && pnpm run build && pnpm run test$'
+[ -z "$(sv 'package.json={"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}')" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL suggest: npm init placeholder test should be ignored"; }
+has "suggest: go" "$(sv go.mod=module\ x)" '^go vet ./... && go test ./...$'
+has "suggest: node + go monorepo" "$(sv 'package.json={"scripts":{"test":"jest"}}' go.mod)" '^npm run test && go vet ./... && go test ./...$'
+has "suggest: python" "$(sv pyproject.toml)" '^pytest -q$'
+[ -z "$(sv README.md)" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL suggest: unknown repo should print nothing"; }
+
 sed 's/^VERIFY_CMD=.*/VERIFY_CMD="make -s verify"/' .claude/loop.conf > .claude/loop.conf.new && mv .claude/loop.conf.new .claude/loop.conf
 git add .claude .gitignore && git commit -qm "chore: kit"
 L=.claude/scripts/loop.sh A=.claude/scripts/approve.sh G=.claude/hooks/guard.sh
@@ -133,6 +153,11 @@ has "tasks auto-approved" "$($L status)" "tasks.md  approved v1"
 has "auto-approve commit" "$(git log -1 --format=%s)" "auto-approve tasks v1"
 
 echo "== /implement loop"
+cp .claude/loop.conf "$X/conf.bak"
+sed 's/^VERIFY_CMD=.*/VERIFY_CMD=""/' "$X/conf.bak" > .claude/loop.conf
+bad $L gate implement
+has "gate names the missing VERIFY_CMD" "$($L gate implement 2>&1)" 'suggested from this repo: VERIFY_CMD="make verify"'
+cp "$X/conf.bak" .claude/loop.conf
 ok $L gate implement
 has start "$($L start --session s1)" "ACTION next"
 [ "$(gw main src/calc.sh x s1)" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL locked orchestrator may not edit code"; }

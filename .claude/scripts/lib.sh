@@ -18,7 +18,7 @@ today() { date -u +%Y-%m-%d; }
 al_init() {
 	REPO=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repository"
 	cd "$REPO" || die "cannot cd to $REPO"
-	VERIFY_CMD="make verify"
+	VERIFY_CMD=""
 	TEST_CMD=""
 	BASE_BRANCH=""
 	SPECS_DIR="specs"
@@ -35,6 +35,33 @@ al_init() {
 	# shellcheck disable=SC1090
 	if [ -f "$AL_CONF" ]; then . "$AL_CONF"; fi
 	STATE_ROOT="$REPO/.agent-loop"
+}
+
+suggest_verify() { # best guess at VERIFY_CMD from files at the repo root; prints nothing if no guess
+	local parts="" pm s r
+	_sv_add() { if [ -z "$parts" ]; then parts=$1; else parts="$parts && $1"; fi; }
+	if [ -f Makefile ] && grep -qE '^verify:' Makefile; then echo "make verify"; return 0; fi
+	if [ -f package.json ]; then
+		pm=npm
+		if [ -f pnpm-lock.yaml ]; then pm=pnpm; elif [ -f yarn.lock ]; then pm=yarn; elif [ -f bun.lockb ] || [ -f bun.lock ]; then pm=bun; fi
+		for s in typecheck lint build test; do
+			r=$(jq -r --arg s "$s" '.scripts[$s] // empty' package.json 2>/dev/null)
+			[ -n "$r" ] || continue
+			case $r in *'no test specified'*) continue ;; esac
+			_sv_add "$pm run $s"
+		done
+	fi
+	if [ -f go.mod ]; then _sv_add "go vet ./... && go test ./..."; fi
+	if [ -f Cargo.toml ]; then _sv_add "cargo test"; fi
+	if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f pytest.ini ] || [ -f tox.ini ]; then _sv_add "pytest -q"; fi
+	if [ -n "$parts" ]; then printf '%s\n' "$parts"; fi
+	return 0
+}
+
+verify_unset_msg() { # one line: why nothing ran + a suggestion, wherever an empty VERIFY_CMD stops something
+	local g; g=$(suggest_verify)
+	if [ -n "$g" ]; then printf 'VERIFY_CMD is not set in .claude/loop.conf — suggested from this repo: VERIFY_CMD="%s"' "$g"
+	else printf 'VERIFY_CMD is not set in .claude/loop.conf — set it to the command that runs your tests, lint and build'; fi
 }
 
 sha256() {

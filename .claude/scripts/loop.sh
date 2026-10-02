@@ -12,7 +12,7 @@
 #   check spec|plan|tasks|brief [--draft]  |  check change [CR-nnn]
 #   start --session ID | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
 #   task <ID> | findings <ID> | review-info <ID|BRANCH|Q> | post-check <ID>
-#   verify | test <args> | impact <ACn...> | cr-new | lineage | report | doctor | unlock | resolve
+#   verify | test <args> | impact <ACn...> | cr-new | lineage | report | doctor | suggest-verify | unlock | resolve
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -35,7 +35,7 @@ render() { # template dest   (uses F KIND TITLE SUP CR)
 run_verify() { # 0 = green. Records HEAD as green only when verify ran on a clean tree and left it clean.
 	local log rc before
 	log=$(VLOG)
-	if [ -z "$VERIFY_CMD" ]; then echo "VERIFY_CMD is empty in loop.conf — nothing was verified" > "$log"; return 0; fi
+	if [ -z "$VERIFY_CMD" ]; then { verify_unset_msg; echo; } > "$log"; return 1; fi # unset is red, never a silent green
 	before=$(git status --porcelain)
 	(bash -c "$VERIFY_CMD") > "$log" 2>&1; rc=$?
 	if [ "$(git status --porcelain)" != "$before" ]; then
@@ -251,6 +251,7 @@ gate_implement() {
 	else e=$(chain_errors tasks) || die "not ready to build — $(printf '%s' "$e" | tr '\n' ';') (see: .claude/scripts/loop.sh status)"; fi
 	c=$(draft_crs | head -1); [ -z "$c" ] || die "$c is waiting for a decision — /approve change, or delete it"
 	br=$(current_branch); [ "$br" != "$(base_branch)" ] || die "you're on $br — check out the feature branch"
+	[ -n "$VERIFY_CMD" ] || die "$(verify_unset_msg)"
 	autocommit_research >/dev/null
 	tree_clean || die "working tree not clean — commit or stash first: $(git status --short | head -5 | tr '\n' ' ')"
 	echo "GATE implement: OK"
@@ -606,7 +607,7 @@ cmd_verify() {
 	local rc
 	soft_feature || F=""
 	run_verify; rc=$?
-	if [ $rc = 0 ]; then echo "verify: green ($VERIFY_CMD)"; else tail -40 "$(VLOG)"; echo "verify: RED ($VERIFY_CMD) — full log: $(VLOG)"; fi
+	if [ $rc = 0 ]; then echo "verify: green ($VERIFY_CMD)"; else tail -40 "$(VLOG)"; echo "verify: RED (${VERIFY_CMD:-not set}) — full log: $(VLOG)"; fi
 	return $rc
 }
 
@@ -700,7 +701,7 @@ cmd_doctor() {
 	chk "settings.json wires the hooks" "jq -e '.hooks.PreToolUse and .hooks.UserPromptExpansion and .hooks.SubagentStop' .claude/settings.json" "merge the kit's settings.json (install.sh does it)"
 	chk ".agent-loop/ gitignored" "git check-ignore -q .agent-loop/x" "add '.agent-loop/' to .gitignore"
 	chk ".claude/worktrees/ gitignored" "git check-ignore -q .claude/worktrees/x" "add '.claude/worktrees/' to .gitignore"
-	chk "VERIFY_CMD set" "test -n \"\$VERIFY_CMD\"" "set VERIFY_CMD in .claude/loop.conf"
+	if [ -n "$VERIFY_CMD" ]; then echo "  ok    VERIFY_CMD set"; else echo "  FAIL  $(verify_unset_msg)"; ok=1; fi
 	if [ -f AGENTS.md ] || [ -f CLAUDE.md ]; then echo "  ok    AGENTS.md / CLAUDE.md present"; else echo "  warn  no AGENTS.md or CLAUDE.md — optional, but agents read it for conventions and hard rules"; fi
 	echo "  base branch: $(base_branch)   verify: ${VERIFY_CMD:-<none>}"
 	return $ok
@@ -710,6 +711,7 @@ cmd=${1:-help}; shift || true
 case $cmd in
 	new) cmd_new "$@" ;;
 	status) cmd_status "$@" ;;
+	suggest-verify) suggest_verify ;;
 	gate) cmd_gate "$@" ;;
 	check) cmd_check "$@" ;;
 	start) cmd_start "$@" ;;

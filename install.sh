@@ -70,10 +70,17 @@ for l in '.agent-loop/' '.claude/worktrees/' '.claude/agent-loop-backup-*/'; do
 	grep -qxF "$l" .gitignore || { echo "$l" >> .gitignore; echo "  .gitignore += $l"; }
 done
 
+vcur=$(bash -c '. .claude/loop.conf 2>/dev/null; printf %s "${VERIFY_CMD:-}"')
+vsug=$(.claude/scripts/loop.sh suggest-verify 2>/dev/null || true)
+if [ -n "$vcur" ]; then vline="VERIFY_CMD is already set: $vcur"
+elif [ -n "$vsug" ]; then vline="Set VERIFY_CMD in .claude/loop.conf (required). Suggested for this repo: VERIFY_CMD=\"$vsug\""
+else vline="Set VERIFY_CMD in .claude/loop.conf (required): the command that runs your tests, lint and build"; fi
+
 cat <<EOF
 
 Done. Next:
-  1. Set VERIFY_CMD (and optionally TEST_CMD) in .claude/loop.conf
+  1. $vline
+     (TEST_CMD is optional.) /implement refuses to start while VERIFY_CMD is empty.
   2. Commit the kit:   git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
   3. Check the setup:  .claude/scripts/loop.sh doctor
   4. Start Claude Code from the repo root and accept the workspace-trust prompt (hooks need it).
