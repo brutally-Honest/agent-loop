@@ -15,16 +15,17 @@ Every `implement`, `review` and `fix` action ends with `model=<haiku|sonnet|opus
 | Last line | What you do |
 |---|---|
 | `ACTION next` | Run `.claude/scripts/loop.sh next`. |
-| `ACTION implement <ID> model=<m>` | Dispatch a NEW agent — **implementer**, or **quick-builder** when ID is `Q` — with the prompt `Feature: <feature>. Task: <ID>.` Then run `.claude/scripts/loop.sh log <ID> <agent> '<line 1 of its final message>'`. |
-| `ACTION review <ID> model=<m>` | Dispatch a NEW **reviewer** with `Mode: task. Feature: <feature>. Task: <ID>.` (ID `Q` → `Mode: brief`; ID `BRANCH` → `Mode: branch`). Keep its full message. Then run `.claude/scripts/loop.sh log <ID> reviewer '<line 1 of its final message>'`. |
-| `ACTION fix <ID> review <r/max> model=<m>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. Fix only these reviewer findings:` followed by the reviewer's full message, verbatim. Then `log` as for implement. |
-| `ACTION fix <ID> post-task <r/max> model=<m>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. The post-task checks failed: run .claude/scripts/loop.sh findings <ID> and fix exactly those.` Then `log` as for implement. |
+| `ACTION implement <ID> model=<m>` | Dispatch a NEW agent — **implementer**, or **quick-builder** when ID is `Q` — with the prompt `Feature: <feature>. Task: <ID>.` Remember its agent id for this task. Then run `.claude/scripts/loop.sh log <ID> <agent> '<line 1 of its final message>'`. |
+| `ACTION review <ID> model=<m>` | Dispatch a NEW **reviewer** — always fresh — with `Mode: task. Feature: <feature>. Task: <ID>.` (ID `Q` → `Mode: brief`; ID `BRANCH` → `Mode: branch`). Keep its full message. Then run `.claude/scripts/loop.sh log <ID> reviewer '<line 1 of its final message>'`. |
+| `ACTION fix <ID> review <r/max> model=<m>` | Continue the SAME implementer of this task with SendMessage: `Fix round <r/max>. Fix only these reviewer findings:` followed by the reviewer's full message, verbatim. If it can't be reached (no id, or SendMessage fails), dispatch a NEW implementer (quick-builder for Q) with `Feature: <feature>. Task: <ID>. Fix round <r/max>. Fix only these reviewer findings:` + the findings. Then `log` as for implement. |
+| `ACTION fix <ID> post-task <r/max> model=<m>` | Same, with: `Fix round <r/max>. The checks failed: run .claude/scripts/loop.sh findings <ID> and fix exactly those.` (a new agent also gets `Feature: <feature>. Task: <ID>.` first). Then `log` as for implement. |
 | `ACTION stop …` | Run `.claude/scripts/loop.sh stop '<the whole ACTION line>'`, then report. |
 | `ACTION finish` | Run `.claude/scripts/loop.sh finish`, then report. |
 | `ACTION pause` | The user paused the build. Run `.claude/scripts/loop.sh status`, show it, and say `/resume` continues. Then you are no longer the orchestrator: do what the user asks. |
 
 Rules:
-- One agent per dispatch, always new; never resume an earlier one. Pass only the prompts above (plus findings in fix rounds) — the agents read everything else from the repo.
+- New agents for `implement` and `review`; fix rounds continue the task's implementer (it already knows the code). Pass only the prompts above (plus findings in fix rounds) — the agents read everything else from the repo.
+- Lines before `ACTION` (e.g. "T002 reviewed: changed package.json", "T001 passes without a review (skipped: low risk …)") are for the report; don't act on them.
 - Pass line 1 of the agent's final message to `log` exactly, in single quotes. A hook has already checked its format; `log` decides what it means.
 - Don't interpret, retry, skip or reorder on your own. If something looks wrong, the next `loop.sh` call will stop the run.
 - Keep your own context small: don't read diffs or files yourself.

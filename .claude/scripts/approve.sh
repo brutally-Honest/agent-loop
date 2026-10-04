@@ -147,15 +147,15 @@ $e"
 fingerprint $fp"
 	echo "APPROVED spec v$ver of $F ($(git rev-parse --short HEAD))"
 	[ -n "$casc" ] && printf '%s' "$casc"
-	if [ -n "$casc" ]; then echo "NEXT /plan-feature — revise the reopened plan for spec v$ver, then /approve plan (tasks regenerate after)"
+	if [ -n "$casc" ]; then echo "NEXT /plan — the planner revises the reopened plan and tasks for spec v$ver, then /approve plan"
 	elif [ -f "$p" ]; then
 		if [ "$(art_state "$p")" = approved ]; then echo "NEXT plan.md and tasks.md stay valid (the contract sections did not change) — /implement"
-		else echo "NEXT /plan-feature"; fi
-	else echo "NEXT /plan-feature"; fi
+		else echo "NEXT /plan"; fi
+	else echo "NEXT /plan"; fi
 }
 
-approve_plan() {
-	local f s t c e ver casc="" mode=new
+approve_plan() { # stamps the plan; with AUTO_APPROVE_TASKS=on also a valid tasks.md, in the same commit
+	local f s t c e ver tver casc="" tnote="" subj n
 	is_quick && die "$F is a /quick feature — it has no plan"
 	e=$(chain_errors spec) || die "the spec must be approved first — $e"
 	f=$(art plan); ready_or_die "$f"
@@ -170,11 +170,31 @@ $e"
 	if [ "$(art_state "$t")" = approved ] && [ "$(fm_get "$t" plan-sha256)" != "$(fm_get "$f" sha256)" ]; then
 		casc=$(reopen_file "$t" "plan v$ver changed")
 	fi
-	[ -n "$(fm_get "$t" previous)" ] && mode=amend
-	finish_commit "docs($F): approve plan v$ver" "sha256 $(fm_get "$f" sha256)"
+	subj="docs($F): approve plan v$ver"
+	case $(art_state "$t") in
+		missing) tnote="NEXT tasks.md is missing — /plan has the planner write it, then /approve tasks" ;;
+		draft)
+			if [ "$(cfg AUTO_APPROVE_TASKS)" != on ]; then
+				tnote="NEXT review $t, then /approve tasks (AUTO_APPROVE_TASKS=off)"
+			elif e=$(check_tasks "$t"); then
+				tver=$(fm_get "$t" version); tver=${tver:-1}
+				stamp "$t" human plan-sha256 "$(fm_get "$f" sha256)" spec-fingerprint "$(spec_fp "$s")"
+				for c in $(pending_crs_where applied); do fm_set "$c" applied "tasks v$tver"; done
+				subj="$subj + tasks v$tver"
+				n=$(task_ids "$t" | grep -c .)
+				tnote="APPROVED tasks v$tver of $F — $n tasks
+NEXT /implement"
+			else
+				tnote="tasks.md stays a draft — it does not pass the checks yet:
+$e
+NEXT fix tasks.md (by hand, or /plan), then /approve tasks"
+			fi ;;
+		approved) tnote="NEXT /implement" ;;
+	esac
+	finish_commit "$subj" "sha256 $(fm_get "$f" sha256)"
 	echo "APPROVED plan v$ver of $F ($(git rev-parse --short HEAD))"
 	[ -n "$casc" ] && echo "$casc"
-	echo "NEXT generate tasks now: run '.claude/scripts/loop.sh gate tasks', then dispatch the tasker (Mode: $mode). tasks.md is approved automatically once it passes the checks."
+	printf '%s\n' "$tnote"
 }
 
 approve_tasks() {
@@ -233,7 +253,11 @@ $e"
 		spec)
 			if is_quick; then casc=$(reopen_file "$(art brief)" "$name: $title")
 			else casc=$(reopen_file "$(art spec)" "$name: $title"); fi ;;
-		plan) is_quick && { restore; die "quick features have no plan — use scope spec"; }; casc=$(reopen_file "$(art plan)" "$name: $title") ;;
+		plan)
+			is_quick && { restore; die "quick features have no plan — use scope spec"; }
+			casc=$(reopen_file "$(art plan)" "$name: $title")
+			[ "$(fm_get "$(art tasks)" status)" = approved ] && casc="$casc
+		$(reopen_file "$(art tasks)" "$name: $title")" ;;
 		tasks) is_quick && { restore; die "quick features have no tasks — use scope spec"; }; casc=$(reopen_file "$(art tasks)" "$name: $title") ;;
 	esac
 	finish_commit "docs($F): approve $name ($scope)" "$title"
@@ -243,8 +267,8 @@ $e"
 		spec)
 			if is_quick; then echo "NEXT apply the Delta of $name to brief.md exactly (strike removed ACs, never delete), run 'loop.sh check brief', then /approve brief"
 			else echo "NEXT apply the Delta of $name to spec.md exactly (strike removed ACs, never delete), run 'loop.sh check spec', then /approve spec — plan and tasks reopen automatically if the contract changed"; fi ;;
-		plan) echo "NEXT /plan-feature (amend mode, guided by $name), then /approve plan — tasks regenerate after" ;;
-		tasks) echo "NEXT run '.claude/scripts/loop.sh gate tasks', then dispatch the tasker (Mode: amend, Change requests: $name); tasks.md is approved automatically once it passes the checks" ;;
+		plan) echo "NEXT /plan (amend mode, guided by $name) — the planner revises plan.md and tasks.md — then /approve plan" ;;
+		tasks) echo "NEXT /plan (the planner revises tasks.md for $name), then /approve tasks" ;;
 	esac
 }
 

@@ -17,8 +17,8 @@ The approval already happened — or was refused — before you read this. When 
 
 | Approved | You do |
 |---|---|
-| spec | Say the next step from its NEXT line (usually `/plan-feature`). |
-| plan | Generate the tasks now: run `.claude/scripts/loop.sh gate tasks`, then dispatch the **tasker** with `Feature: <id>. Mode: <MODE from the gate>.` (+ `Change requests: <ids>` if the gate lists any). When it finishes, run `.claude/scripts/loop.sh status`. tasks.md approved → list the tasks (id — title, one line each) and end with "Type `/implement` to build it." Still a draft → show `.claude/scripts/loop.sh check tasks` and tell the user to fix tasks.md and type `/approve tasks`. |
+| spec | Say the next step from its NEXT line (usually `/plan`). |
+| plan | It approved the tasks in the same step when they pass the checks (APPROVED tasks line): list the tasks (id — title, one line each) and end with "Type `/implement` to build it." If tasks.md stayed a draft, show the problems it printed and say: fix tasks.md by hand or with `/plan`, then `/approve tasks`. |
 | tasks | "Type `/implement` to build it." |
 | brief | Build it now: read `.claude/skills/implement/LOOP.md` and follow it exactly, using the session id above. |
-| change | Follow its NEXT line. Scope **spec**: edit spec.md (or brief.md) to apply the CR's Delta exactly — new ACs added, modified AC text replaced, removed ACs struck through as `- ~~**ACn**~~ — removed in vN (CR-nnn): reason`, never deleted — run `.claude/scripts/loop.sh check spec` (or `check brief`), summarise the diff, and ask the user to `/approve spec` (or `/approve brief`). Scope **plan**: tell the user to run `/plan-feature`. Scope **tasks**: run `.claude/scripts/loop.sh gate tasks`, dispatch the **tasker** with Mode amend and the CR id, then report as for plan. |
+| change | Follow its NEXT line. Scope **spec**: edit spec.md (or brief.md) to apply the CR's Delta exactly — new ACs added, modified AC text replaced, removed ACs struck through as `- ~~**ACn**~~ — removed in vN (CR-nnn): reason`, never deleted — run `.claude/scripts/loop.sh check spec` (or `check brief`), summarise the diff, and ask the user to `/approve spec` (or `/approve brief`). Scope **plan** or **tasks**: tell the user to run `/plan` (the planner revises what the change request reopened). |

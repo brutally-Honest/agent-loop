@@ -108,8 +108,8 @@ check_plan() { # file [draft|approve]
 	return $_e
 }
 
-check_tasks() { # file
-	local f=$1 spec ids all body tids dup t blk v acs a covered seen x dones opens prev prevtxt ptids maxprev old new c delta line verb id
+check_tasks() { # file [draft|approve]
+	local f=$1 mode=${2:-approve} spec ids all body tids dup t blk v acs a covered seen x dones opens prev prevtxt ptids maxprev old new c delta line verb id
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
 	spec=$(art spec)
@@ -148,6 +148,11 @@ check_tasks() { # file
 		fi
 		v=$(printf '%s\n' "$blk" | field_stdin Tests)
 		printf '%s' "$v" | grep -qiE '[0-9]+ ?%|coverage' && err "$t: '- Tests:' must name behaviours (happy path, edge cases), not coverage"
+		_opt_field "$t" "$blk" Size "S M L"
+		_opt_field "$t" "$blk" Risk "low high"
+		_opt_field "$t" "$blk" Review "skip always"
+		_opt_field "$t" "$blk" Verify "targeted full"
+		_opt_field "$t" "$blk" Model "haiku sonnet opus"
 		v=$(printf '%s\n' "$blk" | field_stdin Commit | tr -d '`')
 		[ -z "$v" ] || printf '%s' "$v" | grep -qE '^[a-z]+(\([^)]+\))?!?: .+' || err "$t: '- Commit:' must be a conventional subject, e.g. 'feat(api): add rate limit'"
 		for x in $(printf '%s\n' "$blk" | field_stdin Depends | grep -oE 'T[0-9][0-9][0-9]'); do
@@ -192,8 +197,15 @@ $delta
 EOF
 	done
 
-	_markers "$f"
+	[ "$mode" = draft ] || _markers "$f"
 	return $_e
+}
+
+_opt_field() { # task block field "valid values" — optional fields must hold a known value when present
+	local v
+	v=$(printf '%s\n' "$2" | field_stdin "$3")
+	[ -n "$v" ] || return 0
+	case " $4 " in *" $v "*) ;; *) err "$1: '- $3: $v' — use one of: $4" ;; esac
 }
 
 _cr_task_cover() { # file body verb id opens dones crname

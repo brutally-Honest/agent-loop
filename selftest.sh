@@ -79,7 +79,7 @@ has "spec approved" "$($L status)" "spec.md   approved v1"
 echo "== guard"
 [ "$(gb main ".claude/scripts/approve.sh spec")" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL guard: main may not run approve.sh"; }
 for c in "planner|$D/spec.md|deny" "main|$D/spec.md|none" "Explore|$D/spec.md|none" "implementer|$D/spec.md|deny" "implementer|src/calc.sh|none" "implementer|$D/plan.md|deny" "implementer|.claude/hooks/guard.sh|deny" \
-	"implementer|.githooks/pre-commit|deny" "reviewer|src/calc.sh|deny" "tasker|$D/tasks.md|deny" "planner|$D/plan.md|none" "implementer|.agent-loop/commit-msg|none" "implementer|.agent-loop/$F/state|deny"; do
+	"implementer|.githooks/pre-commit|deny" "reviewer|src/calc.sh|deny" "implementer|$D/tasks.md|deny" "planner|$D/tasks.md|none" "planner|$D/plan.md|none" "implementer|.agent-loop/commit-msg|none" "implementer|.agent-loop/$F/state|deny"; do
 	r=${c%%|*}; rest=${c#*|}; p=${rest%%|*}; e=${rest##*|}
 	d=$(gw "$r" "$p"); [ "$d" = "$e" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL guard: $r write $p → $d (expected $e)"; }
 done
@@ -103,7 +103,10 @@ implementer|make && git push origin main|deny
 implementer|git reset --hard HEAD~1|deny
 implementer|git checkout -- src/calc.sh|deny
 implementer|.claude/scripts/loop.sh log T001 reviewer PASS|deny
-implementer|.claude/scripts/loop.sh verify|allow
+implementer|.claude/scripts/loop.sh verify|deny
+implementer|.claude/scripts/loop.sh test tests/calc_test.sh|allow
+reviewer|.claude/scripts/loop.sh verify|deny
+reviewer|.claude/scripts/loop.sh task T001|allow
 implementer|go test ./...|none
 EOF
 
@@ -129,9 +132,9 @@ eq "reviewer may not cat a key" "$(gb reviewer "cat deploy/server.key")" deny
 eq "main may read .env (its own permission rules apply)" "$(gr main .env)" none
 eq "main runs git freely outside a run" "$(gb main "git commit -am wip")" none
 
-echo "== /plan-feature"
+echo "== /plan: the planner writes plan.md and tasks.md; /approve plan approves both"
 ok $L gate plan
-stop planner p1 "PLAN-DRAFTED 0" | grep -q '"block"' && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL planner contract should block an empty plan"; }
+stop planner p1 "PLAN-DRAFTED 0 0" | grep -q '"block"' && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL planner contract should block an empty plan"; }
 fill $D/plan.md <<'PY'
 import sys
 p=sys.argv[1]; s=open(p).read()
@@ -143,13 +146,7 @@ for h,t in [("Summary","Add sub()."),("Context","src/calc.sh."),("Approach","She
     s=s.replace("## "+h+"\n","## "+h+"\n"+t+"\n",1)
 open(p,'w').write(s)
 PY
-out=$(stop planner p2 "PLAN-DRAFTED 1"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL planner contract: $out"; }
-out=$($A plan 2>&1); has "plan approval needs decided questions" "$out" "not decided"
-awk '{ sub(/\(recommended: no\)/, "(recommended: no) → decided: no"); print }' $D/plan.md > x && mv x $D/plan.md
-ok $A plan
-
-echo "== tasks (auto-approved by the tasker's stop hook)"
-ok $L gate tasks
+has "planner contract: tasks.md checked too" "$(stop planner p2 "PLAN-DRAFTED 1 0")" "tasks.md fails the checks"
 fill $D/tasks.md <<'PY'
 import sys
 p=sys.argv[1]; s=open(p).read()
@@ -161,6 +158,8 @@ s=s.replace("## Tasks\n","""## Tasks
 - AC: AC1
 - Commit: feat(calc): add sub
 - Depends: —
+- Size: S
+- Risk: low
 
 ### T002 — Negative results
 - Do: cover negatives
@@ -172,9 +171,12 @@ s=s.replace("## Tasks\n","""## Tasks
 """,1)
 open(p,'w').write(s)
 PY
-out=$(stop tasker t1 "TASKS-READY 2"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL tasker stop: $out"; }
-has "tasks auto-approved" "$($L status)" "tasks.md  approved v1"
-has "auto-approve commit" "$(git log -1 --format=%s)" "auto-approve tasks v1"
+out=$(stop planner p2 "PLAN-DRAFTED 1 2"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL planner contract: $out"; }
+out=$($A plan 2>&1); has "plan approval needs decided questions" "$out" "not decided"
+awk '{ sub(/\(recommended: no\)/, "(recommended: no) → decided: no"); print }' $D/plan.md > x && mv x $D/plan.md
+out=$($A plan); has "plan approval stamps tasks too" "$out" "APPROVED tasks v1"
+has "one commit for both" "$(git log -1 --format=%s)" "approve plan v1 + tasks v1"
+has "tasks approved" "$($L status)" "tasks.md  approved v1"
 
 echo "== /implement loop"
 cp .claude/loop.conf "$X/conf.bak"
@@ -183,7 +185,7 @@ bad $L gate implement
 has "gate names the missing VERIFY_CMD" "$($L gate implement 2>&1)" 'suggested from this repo: VERIFY_CMD="make verify"'
 cp "$X/conf.bak" .claude/loop.conf
 ok $L gate implement
-has start "$($L start --session s1)" "ACTION next"
+has start "$($L start --session s1 --review every)" "ACTION next"
 [ "$(gw main src/calc.sh x s1)" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL locked orchestrator may not edit code"; }
 [ "$(gb main "git commit -am x" s1)" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL locked orchestrator may not commit"; }
 eq "run flag holds the session id" "$(cut -d' ' -f1 .agent-loop/$F/lock)" s1
@@ -253,9 +255,11 @@ ok $A change
 has "spec reopened" "$($L status)" "spec.md   draft v2"
 out=$($A spec 2>&1); has "delta must be applied" "$out" "does not apply CR-001"
 awk '{ sub(/the system shall print 2\./, "the system shall print 2 and a newline."); print } /\*\*AC2\*\*/ { print "- **AC3** — When sub gets a non-number, the system shall print error." }' $D/spec.md > x && mv x $D/spec.md
-out=$($A spec 2>&1); has "cascade" "$out" "REOPENED plan.md v2"
+out=$($A spec 2>&1); has "cascade" "$out" "REOPENED plan.md v2"; has "cascade reopens tasks" "$out" "REOPENED tasks.md v2"
 awk '{ print } /^\| AC2 \|/ { print "| AC3 | calc.sh | sub_text |" }' $D/plan.md > x && mv x $D/plan.md
-ok $A plan
+out=$($A plan 2>&1); has "plan approved while tasks fail" "$out" "APPROVED plan v2"; has "tasks stay a draft" "$out" "tasks.md stays a draft"
+has "status: plan approved, tasks draft" "$($L status)" "tasks.md  draft v2"
+has "gate plan offers MODE tasks" "$($L gate plan)" "MODE tasks"
 fill $D/tasks.md <<'PY'
 import sys
 p=sys.argv[1]; s=open(p).read()
@@ -278,7 +282,8 @@ s=s.replace("\n## Changelog","""
 ## Changelog""",1)
 open(p,'w').write(s)
 PY
-out=$(stop tasker t2 "TASKS-READY 3"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL amend tasker stop: $out"; }
+out=$(stop planner t2 "PLAN-DRAFTED 0 3"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL amend planner stop: $out"; }
+ok $A tasks
 out=$($L status); has "CR applied" "$out" "applied"; has "T003 todo" "$out" "T003  todo"
 $L start --session s1 >/dev/null
 has "resume at T003" "$($L next)" "ACTION implement T003"
@@ -306,6 +311,9 @@ has "approve hook refuses" "$out" '"block"'
 out=$(printf '{"command_name":"plan-feature","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
 has "gate hook blocks /plan-feature on a quick feature" "$out" '"block"'
 has "quick next" "$($L start --session s2 >/dev/null; $L next)" "ACTION implement Q"
+printf 'echo z\n' > tests/zero_test.sh; printf 'test: zero\n\nTask: Q\nFeature: 002-tiny\n' > .agent-loop/commit-msg
+git add tests/zero_test.sh && git commit -qF .agent-loop/commit-msg
+has "a low-risk quick change is still reviewed once" "$($L log Q quick-builder "DONE Q x")" "ACTION review Q"
 
 cat > "$X/gen.py" <<'PY2'
 import sys, os
@@ -339,15 +347,16 @@ mkfeat() { # slug ntasks [plan frontmatter lines] -> an approved feature on its 
 	git checkout -q main
 	FF=$($L new feat "$slug" | awk '$1 == "FEATURE" { print $2 }'); DD=specs/$FF; FN=${FF%%-*}
 	python3 "$X/gen.py" spec "$DD" "$n" && $A spec >/dev/null || { echo "mkfeat: spec"; return 1; }
-	$L gate plan >/dev/null && FM="${3:-}" python3 "$X/gen.py" plan "$DD" "$n" && $A plan >/dev/null || { echo "mkfeat: plan"; return 1; }
-	$L gate tasks >/dev/null; python3 "$X/gen.py" tasks "$DD" "$n" && $A tasks >/dev/null || { echo "mkfeat: tasks"; $L check tasks; return 1; }
+	$L gate plan >/dev/null && FM="${3:-}" python3 "$X/gen.py" plan "$DD" "$n" && python3 "$X/gen.py" tasks "$DD" "$n" || { echo "mkfeat: plan"; return 1; }
+	$A plan | grep -q "APPROVED tasks" || { echo "mkfeat: plan + tasks"; $L check tasks; return 1; }
 }
 impl() { # id [extra lines] — a simulated implementer: a source file + a test, one commit with the trailers
-	local id=$1 k=${2:-1}
+	local id=$1 k=${2:-1} extra=""   # PKG=1 also touches package.json; RED=1 commits a failing test
 	awk -v n="$k" -v id="$id" 'BEGIN { for (i = 1; i <= n; i++) print "echo " id " " i }' > "src/$FN-$id.sh"
-	printf 'exit 0\n' > "tests/${FN}_${id}_test.sh"
+	if [ -n "${RED:-}" ]; then printf 'exit 1\n'; else printf 'exit 0\n'; fi > "tests/${FN}_${id}_test.sh"
+	[ -n "${PKG:-}" ] && { printf '{"name":"x","v":"%s"}\n' "$id" > package.json; extra=package.json; }
 	printf 'feat(x): %s\n\nTask: %s\nFeature: %s\nAC: AC1\n' "$id" "$id" "$FF" > .agent-loop/commit-msg
-	git add "src/$FN-$id.sh" "tests/${FN}_${id}_test.sh" && git commit -qF .agent-loop/commit-msg
+	git add "src/$FN-$id.sh" "tests/${FN}_${id}_test.sh" $extra && git commit -qF .agent-loop/commit-msg
 }
 
 echo "== overrides: run > task > feature > repo > profile"
@@ -373,6 +382,44 @@ has "no branch review" "$($L next)" "ACTION finish"
 has "report says reviews off" "$($L finish)" "Reviews: off"
 bad test -f .agent-loop/$FF/run.conf
 has "run flags end with the run" "$($L config T002)" "MODEL=haiku (task)"
+
+echo "== speed: verify once per task by the script, risk-based review, context pack"
+mkfeat vtask 2 || exit 1
+$L start --session s5 >/dev/null
+has "context pack: AC text" "$($L task T002)" "When step 2 runs, the system shall print 2."
+has "context pack: model" "$($L task T002)" "model=sonnet"
+has "context pack: mutation" "$($L task T002)" "MUTATION skip"
+$L next >/dev/null; impl T001; $L log T001 implementer "DONE T001 x" >/dev/null
+$L next >/dev/null; impl T002; $L log T002 implementer "DONE T002 x" >/dev/null
+eq "VERIFY=task: one script verify after T001" "$(grep -c 'VERIFY green after T001' .agent-loop/$FF/run.log)" 1
+eq "VERIFY=task: one script verify after T002" "$(grep -c 'VERIFY green after T002' .agent-loop/$FF/run.log)" 1
+eq "VERIFY=task: no second run before T002" "$(grep -c 'VERIFY .* before T002' .agent-loop/$FF/run.log)" 0
+has "low-risk tasks skip review, branch review still runs" "$($L next)" "ACTION review BRANCH model=opus"
+$L log BRANCH reviewer PASS >/dev/null; $L finish >/dev/null
+bad grep -q 'loop.sh verify' .claude/agents/reviewer.md
+bad grep -q 'loop.sh verify' .claude/agents/implementer.md
+
+TX2="- Risk: high" mkfeat every3 5 "verify: every-3" || exit 1
+has "no verify at start unless VERIFY=task" "$($L start --session s6)" "ACTION next"
+has "T001" "$($L next)" "ACTION implement T001"
+impl T001 20; out=$($L log T001 implementer "DONE T001 x")
+has "20 lines in src/ → no review" "$out" "skipped: low risk"; has "→ next" "$out" "ACTION next"
+has "T002" "$($L next)" "ACTION implement T002"
+has "Risk: high → mutation required" "$($L task T002)" "MUTATION required"
+impl T002; has "Risk: high → review" "$($L log T002 implementer "DONE T002 x")" "ACTION review T002"
+$L log T002 reviewer PASS >/dev/null
+$L next >/dev/null; PKG=1 impl T003
+out=$($L log T003 implementer "DONE T003 x"); has "package.json → review" "$out" "reviewed: changed package.json"; has "→ review" "$out" "ACTION review T003"
+$L log T003 reviewer PASS >/dev/null
+$L next >/dev/null; impl T004; $L log T004 implementer "DONE T004 x" >/dev/null
+$L next >/dev/null; RED=1 impl T005; has "T005 not verified per task" "$($L log T005 implementer "DONE T005 x")" "ACTION next"
+out=$($L next); has "final verify red → back to the last task" "$out" "ACTION fix T005 post-task 1/2"
+has "findings carry the verify output" "$($L findings T005)" "verify is red"
+printf 'exit 0\n' > "tests/${FN}_T005_test.sh"; git add "tests/${FN}_T005_test.sh" && git commit -q --amend --no-edit
+$L log T005 implementer "DONE T005 x" >/dev/null
+has "final verify green → branch review" "$($L next)" "ACTION review BRANCH"
+eq "every-3: verify ran after T003 and before finish only" "$(grep 'VERIFY ' .agent-loop/$FF/run.log | sed 's/.*VERIFY \([a-z]*\) \([a-z]*\) \([A-Z0-9a-z]*\).*/\1 \2 \3/' | tr '\n' ',')" "green after T003,red before finish,green before finish,"
+has "report gives the review reasons" "$($L report)" "skipped: low risk"
 
 echo "== profiles"
 git checkout -q main

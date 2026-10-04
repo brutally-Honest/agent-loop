@@ -45,8 +45,16 @@ Fill spec.md (keep the frontmatter as is; replace each <!-- hint --> with conten
 - Edge cases `- **E1** — <situation> → <expected> (ACn)`.
 Run `.claude/scripts/loop.sh check spec --draft` and fix the format errors it lists.
 
-## 4. Critic pass
-Dispatch the **spec-critic** agent: "Spec: specs/<feature>/spec.md". If it returns `GAPS`, ask the user the questions that matter (AskUserQuestion, ≤4 per call) and update the spec.
+## 4. Critic pass — CRITIC is !`.claude/scripts/loop.sh cfg CRITIC`
+- `off`: skip this step.
+- `self`: critique the draft yourself, briefly, against this list, then ask the user only what matters (AskUserQuestion, ≤4 per call) and update the spec:
+  1. Untestable or vague ACs ("fast", "secure", "handles errors"), no observable result, implementation instead of behaviour.
+  2. Missing behaviour: each dependency failing; invalid, empty or huge input; duplicates and retries; concurrency; permissions and tenant boundaries; time zones; partial failure.
+  3. Contradictions between ACs, or with a non-goal or constraint.
+  4. Scope holes: something the goal needs that no AC covers; something an AC implies that the non-goals exclude.
+  5. Kind rules (fix: regression case; refactor: what must stay identical; chore: what must still work).
+  6. Anything you proposed that the user never confirmed (`[ASSUMED]`).
+- `agent`: dispatch the **spec-critic** agent: "Spec: specs/<feature>/spec.md". If it returns `GAPS`, ask the user the questions that matter (AskUserQuestion, ≤4 per call) and update the spec.
 
 ## 5. Hand back
 Run `.claude/scripts/loop.sh check spec` (the approval check). Show the user: the AC list (one line each), the non-goals, and anything the check still reports. End with:

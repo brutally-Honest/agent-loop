@@ -8,8 +8,7 @@
 #
 #   implementer / quick-builder  DONE|BLOCKED|NEEDS-HUMAN <task> ...  + post-task checks
 #   reviewer                     PASS|FIX|ESCALATE (alone on line 1) + numbered findings for FIX
-#   planner                      PLAN-DRAFTED <n>  + plan.md passes the draft checks
-#   tasker                       TASKS-READY <n>   + tasks.md passes the checks -> auto-approved here
+#   planner                      PLAN-DRAFTED <questions> <tasks>  + plan.md and tasks.md pass the draft checks
 #   impact-analyst               CR-DRAFTED CR-nnn + the change request passes the checks
 #   spec-critic                  GAPS <n> | CLEAN
 set -u
@@ -20,7 +19,7 @@ aid=$(jq -r '.agent_id // "unknown"' <<<"$input")
 cwd=$(jq -r '.cwd // ""' <<<"$input")
 msg=$(jq -r '.last_assistant_message // ""' <<<"$input")
 
-case $role in implementer | quick-builder | reviewer | planner | tasker | impact-analyst | spec-critic) ;; *) exit 0 ;; esac
+case $role in implementer | quick-builder | reviewer | planner | impact-analyst | spec-critic) ;; *) exit 0 ;; esac
 [ -n "$cwd" ] && cd "$cwd" 2>/dev/null
 git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 HOOKS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -82,19 +81,13 @@ reviewer)
 	esac
 	ok ;;
 planner)
-	printf '%s' "$first" | grep -Eq '^PLAN-DRAFTED [0-9]+$' || block "your final message must start with 'PLAN-DRAFTED <number of open questions>'. It started with: '$first'"
-	out=$(check_plan "$(art plan)" draft) || block "plan.md fails the checks. Fix, then finish again:
+	printf '%s' "$first" | grep -Eq '^PLAN-DRAFTED [0-9]+ [0-9]+$' || block "your final message must start with 'PLAN-DRAFTED <undecided open questions> <number of tasks>'. It started with: '$first'"
+	if [ "$(art_state "$(art plan)")" != approved ]; then
+		out=$(check_plan "$(art plan)" draft) || block "plan.md fails the checks. Fix, then finish again:
 $out"
-	ok ;;
-tasker)
-	printf '%s' "$first" | grep -Eq '^TASKS-READY [0-9]+$' || block "your final message must start with 'TASKS-READY <number of tasks>'. It started with: '$first'"
-	out=$(check_tasks "$(art tasks)") || block "tasks.md fails the checks. Fix, then finish again:
-$out"
-	if [ "$(art_state "$(art tasks)")" = draft ]; then
-		out=$(bash "$SCRIPTS/approve.sh" tasks --by auto 2>&1) || block "tasks.md passed the checks but the auto-approval failed:
-$out"
-		log_event "tasks auto-approved after the tasker finished"
 	fi
+	out=$(check_tasks "$(art tasks)" draft) || block "tasks.md fails the checks. Fix, then finish again:
+$out"
 	ok ;;
 impact-analyst)
 	printf '%s' "$first" | grep -Eq '^CR-DRAFTED CR-[0-9]{3}$' || block "your final message must start with 'CR-DRAFTED CR-nnn'. It started with: '$first'"

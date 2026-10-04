@@ -258,6 +258,13 @@ strip_noise() { # drop <!-- comments --> (single or multi line) and blank lines
 }
 
 doc() { fm_body "$1" | strip_noise; }   # file -> body without frontmatter, comments, blank lines
+strip_comments() { awk '{ line = $0; out = ""
+	while (1) {
+		if (incom) { p = index(line, "-->"); if (!p) { line = ""; break }; line = substr(line, p + 3); incom = 0 }
+		p = index(line, "<!--"); if (!p) { out = out line; break }
+		out = out substr(line, 1, p - 1); line = substr(line, p + 4); incom = 1
+	}
+	print out }'; }   # like strip_noise, but blank lines (paragraph breaks) stay
 
 sec() { # stdin markdown, $1 = level-2 heading title (case-insensitive) -> that section's lines
 	T="$1" awk '
@@ -266,6 +273,7 @@ sec() { # stdin markdown, $1 = level-2 heading title (case-insensitive) -> that 
 		insec { print }'
 }
 section() { doc "$1" | sec "$2"; }
+sec_raw() { sec "$1"; }   # same as sec; named for streams that keep blank lines
 
 ac_active() { awk '/^[[:space:]]*[-*][[:space:]]+\*\*AC[0-9]+\*\*/ { if (match($0, /AC[0-9]+/)) print substr($0, RSTART, RLENGTH) }'; }
 ac_struck() { awk '/^[[:space:]]*[-*][[:space:]]+~~\*\*AC[0-9]+\*\*~~/ { if (match($0, /AC[0-9]+/)) print substr($0, RSTART, RLENGTH) }'; }

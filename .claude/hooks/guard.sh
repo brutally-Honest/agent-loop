@@ -12,8 +12,8 @@
 #                 outside a run: free, bar the two rules above.
 #   kit agents    always constrained, run or no run:
 #     reviewer, spec-critic          read-only: no edits; single allow-listed read commands.
-#     planner, tasker, impact-analyst read-only except their own file (plan.md / tasks.md /
-#                 changes/CR-*.md), and only when the upstream artifact is approved.
+#     planner, impact-analyst    read-only except their own files (plan.md + tasks.md /
+#                 changes/CR-*.md), and the planner only once the spec is approved.
 #     implementer, quick-builder     code anywhere except specs/ (bar research.md), .claude/,
 #                 PROTECTED_GLOBS; git writes only in the exact shapes a task commit needs.
 #     all of them: no .claude/ or .agent-loop/ writes, no reading secrets (.env*, keys).
@@ -42,7 +42,7 @@ sid=$(jq -r '.session_id // ""' <<<"$input")
 case $role in
 	implementer | quick-builder) class=builder ;;
 	reviewer | spec-critic) class=reader ;;
-	planner | tasker | impact-analyst) class=writer ;;
+	planner | impact-analyst) class=writer ;;
 	main) class=main ;;
 	*) class=other ;;   # built-in or your own agents: free outside the kit's rules for everyone
 esac
@@ -124,10 +124,13 @@ if [ "$tool" = Bash ]; then
 	if printf '%s' "$staterest" | grep -q '\.agent-loop' && writes; then deny ".agent-loop/ holds loop state; only loop.sh writes it."; fi
 
 	# loop.sh is the loop's own tool: approve well-formed single calls per role, whatever the spelling
+	if [ "$class" = reader ] && has '^\.claude/scripts/loop\.sh verify([[:space:]]|$)'; then
+		deny "reviewers don't run verify — loop.sh already did; review-info prints its result (VERIFY line)."
+	fi
 	if loopsh && single; then
 		sub=$(printf '%s' "$cmd" | awk '{ print $2 }')
 		case $class:$sub in
-			builder:verify | builder:test | builder:status | builder:check | builder:task | builder:findings | builder:post-check | builder:review-info | builder:impact | builder:resolve | builder:lineage | builder:report | builder:config)
+			builder:test | builder:status | builder:check | builder:task | builder:findings | builder:post-check | builder:review-info | builder:impact | builder:resolve | builder:lineage | builder:report | builder:config)
 				allow "loop.sh $sub" ;;
 		esac
 	fi
@@ -148,12 +151,12 @@ if [ "$tool" = Bash ]; then
 			&& deny "$role may not write files or run other programs (flag not allowed)."
 		if has '^git([[:space:]]+(-C[[:space:]]+[^[:space:]]+|--no-pager))*[[:space:]]+(status|diff|show|log|blame|ls-files|ls-tree|rev-parse|rev-list|merge-base|cat-file|grep|shortlog|describe|notes show)([[:space:]]|$)' \
 			|| has '^git branch( (-a|-r|-v|-vv|--all|--list|--remotes|--show-current|--contains|--merged|--no-merged)( [^-][^[:space:]]*)?)*$' \
-			|| has '^\.claude/scripts/loop\.sh (status|check|task|findings|review-info|verify|test|impact|resolve|lineage|report|config)([[:space:]]|$)' \
+			|| has '^\.claude/scripts/loop\.sh (status|check|task|findings|review-info|test|impact|resolve|lineage|report|config)([[:space:]]|$)' \
 			|| has '^(ls|cat|head|tail|wc|grep|rg|find|tree|stat|file|diff|du|pwd|which|echo)([[:space:]]|$)'; then
 			allow "$role read-only command"
 		fi
 		[ -n "$READONLY_EXTRA_CMDS" ] && has "^($READONLY_EXTRA_CMDS)([[:space:]]|\$)" && allow "$role read-only command (READONLY_EXTRA_CMDS)"
-		deny "$role is read-only: git status/diff/show/log/blame/ls-files, loop.sh status|check|task|review-info|test|impact, ls/cat/grep/rg/find only."
+		deny "$role is read-only: git status/diff/show/log/blame/ls-files, loop.sh status|check|task|review-info|test|impact|config, ls/cat/grep/rg/find only."
 		;;
 	builder)
 		has '(^|[^[:alnum:]_-])git[[:space:]].*(--git-dir|--work-tree)|(^|[^[:alnum:]_-])git[[:space:]]+-C[[:space:]]' && deny "$role may not point git at another directory."
@@ -163,6 +166,7 @@ if [ "$tool" = Bash ]; then
 		has '(^|[^[:alnum:]_-])git[[:space:]]+commit([[:space:]]+[^[:space:]]+)*[[:space:]]+(--no-verify|-[a-zA-Z]*n[a-zA-Z]*)([[:space:]]|$)' && deny "$role may not skip git hooks (--no-verify / -n)."
 		has '(^|[^[:alnum:]_-])git[[:space:]]+add([[:space:]]+[^[:space:]]+)*[[:space:]]+(-[a-zA-Z]*[Afu][a-zA-Z]*|--all|--force|--update|\.|\./|:/|\*)([[:space:]]|$)' && deny "$role must 'git add' explicit paths (no -A, ., -f, -u)."
 		has '^\.claude/scripts/loop\.sh (start|next|log|stop|finish|unlock|new|cr-new|gate|pause|answer|accept)([[:space:]]|$)' && deny "that loop.sh command belongs to the orchestrator, not to $role."
+		has '^\.claude/scripts/loop\.sh verify([[:space:]]|$)' && deny "the script runs the full verify once per task after you report DONE — run targeted tests instead: .claude/scripts/loop.sh test <args> (or the repo's test command for the packages you touched)."
 		has '(^|[^[:alnum:]_-])rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+)*(/|~|\$HOME|\.\.?)([[:space:]]|/?$)' && deny "$role may not delete the repo, home or root."
 		if single; then
 			case $(gitsub) in
@@ -261,8 +265,8 @@ check_file() { # rel path
 				esac ;;
 			tasks.md)
 				case $role in
-					tasker) chain_errors plan >/dev/null || deny "plan.md of $F is not approved — the tasker stops here." ;;
-					*) deny "only the tasker writes tasks.md." ;;
+					planner) chain_errors spec >/dev/null || deny "spec.md of $F is not approved — the planner stops here. The user must /approve spec first." ;;
+					*) deny "only the planner writes tasks.md." ;;
 				esac ;;
 			changes/CR-*.md) [ "$role" = impact-analyst ] || deny "only the impact-analyst writes change requests." ;;
 			*) [ "$role" = planner ] || deny "$role may only write research.md under $SPECS_DIR/." ;;

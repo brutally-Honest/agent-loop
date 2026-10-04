@@ -8,7 +8,7 @@
 # Usage: .claude/scripts/loop.sh <command> [args]   (run from the repo root)
 #   status [feature]                  where things stand + the next step
 #   new <kind> <slug> [--worktree] [--quick] [--base REF] [--supersedes NNN]
-#   gate plan|tasks|implement|amend   precondition check for a skill (exit 1 = stop)
+#   gate plan|implement|amend         precondition check for a skill (exit 1 = stop)
 #   check spec|plan|tasks|brief [--draft]  |  check change [CR-nnn]
 #   config [TASK]                     every setting's effective value and where it came from
 #   start --session ID [flags] | pause [--now] | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
@@ -33,7 +33,7 @@ render() { # template dest   (uses F KIND TITLE SUP CR)
 		-e "s|{{TITLE}}|${TITLE:-$F}|g" -e "s|{{SUPERSEDES}}|${SUP:-}|g" -e "s|{{CR}}|${CR:-}|g" -e 's/^\([a-z-]*\): $/\1:/' "$src" > "$2"
 }
 
-run_verify() { # 0 = green. Records HEAD as green only when verify ran on a clean tree and left it clean.
+run_verify() { # [why] -> 0 = green. Records HEAD as green only when verify ran on a clean tree and left it clean.
 	local log rc before
 	log=$(VLOG)
 	if [ -z "$VERIFY_CMD" ]; then { verify_unset_msg; echo; } > "$log"; return 1; fi # unset is red, never a silent green
@@ -44,7 +44,41 @@ run_verify() { # 0 = green. Records HEAD as green only when verify ran on a clea
 		rc=1
 	fi
 	if [ $rc = 0 ] && [ -z "$before" ] && [ -n "${F:-}" ]; then sfile_set green "$(git rev-parse HEAD)"; fi
+	if [ -n "${F:-}" ] && [ -n "${1:-}" ]; then
+		if [ $rc = 0 ]; then log_event "VERIFY green $1 at $(short)"; else log_event "VERIFY red $1 at $(short)"; fi
+	fi
 	return $rc
+}
+
+verify_due() { # id -> 0 when the script runs VERIFY_CMD right after this task
+	local v n i t
+	v=$(cfg VERIFY)
+	[ "$v" = off ] && return 1
+	[ "$1" = Q ] && return 0   # a quick change is one unit: its post-task verify is the final one
+	case $(task_field "$(art tasks)" "$1" Verify | tr '[:upper:]' '[:lower:]') in full) return 0 ;; targeted) return 1 ;; esac
+	case $v in
+		task) return 0 ;;
+		every-*)
+			n=${v#every-}; i=0
+			for t in $(task_ids "$(art tasks)"); do i=$((i + 1)); [ "$t" = "$1" ] && break; done
+			[ $((i % n)) = 0 ] ;;
+		*) return 1 ;;   # targeted | end: once, before the branch review
+	esac
+}
+
+final_verify() { # -> 0 when HEAD is proven green (or VERIFY=off); else prints the ACTION that fixes it
+	local last
+	[ "$(cfg VERIFY)" = off ] && return 0
+	[ "$(sfile_get green)" = "$(git rev-parse HEAD)" ] && return 0
+	if run_verify "before finish"; then return 0; fi
+	last=$(for t in $(task_ids "$(art tasks)"); do case $(state_get "$t") in PASS | NEEDS-HUMAN) echo "$t" ;; esac; done | tail -1)
+	echo "verify is red on the finished branch ($VERIFY_CMD) — sending it back to $last:"
+	tail -25 "$(VLOG)"
+	sfile_set "findings.$last" "verify is red on the finished branch ($VERIFY_CMD):
+$(tail -25 "$(VLOG)")"
+	state_set "$last" IN-PROGRESS "final verify red"
+	bump "$last" post-task
+	return 1
 }
 
 autocommit_research() { # commit research.md when it is the only uncommitted change (your answers to Qn)
@@ -151,16 +185,16 @@ next_step() {
 	esac
 	st=$(art_state "$(art plan)")
 	case $st in
-		missing) echo "/plan-feature"; return ;;
-		draft) echo "/plan-feature (draft or reopened plan), then /approve plan"; return ;;
+		missing) echo "/plan"; return ;;
+		draft) echo "/plan (draft or reopened plan), then /approve plan"; return ;;
 		approved) ;;
 		*) echo "plan.md is $st — /amend, or reopen it: .claude/scripts/approve.sh reopen plan --reason '…'"; return ;;
 	esac
-	ce=$(chain_errors plan) || { echo "$ce — /plan-feature to revise"; return; }
+	ce=$(chain_errors plan) || { echo "$ce — /plan to revise"; return; }
 	st=$(art_state "$(art tasks)")
 	case $st in
-		missing) echo "tasks are generated after /approve plan — ask Claude to run the tasker, or re-run /approve plan from a draft plan"; return ;;
-		draft) echo "tasks.md is a draft — fix what '.claude/scripts/loop.sh check tasks' reports, then /approve tasks"; return ;;
+		missing) echo "/plan — the planner writes tasks.md"; return ;;
+		draft) echo "tasks.md is a draft — fix what '.claude/scripts/loop.sh check tasks' reports (by hand, or /plan), then /approve tasks"; return ;;
 		approved) ;;
 		*) echo "tasks.md is $st — /amend"; return ;;
 	esac
@@ -213,37 +247,28 @@ cmd_status() {
 
 pending_crs() { local c; for c in $(cr_files); do [ "$(fm_get "$c" status)" = approved ] && [ -z "$(fm_get "$c" applied)" ] && basename "$c" .md; done; return 0; }
 
-gate_plan() {
-	local e p st mode=new
+gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan is approved, only tasks.md is open
+	local e p t st tst mode=new
 	is_quick && die "$F is a /quick feature (brief.md) — it has no plan"
 	e=$(chain_errors spec) || die "the planner stops here — $e. Approve the spec first: /approve spec"
-	p=$(art plan); st=$(art_state "$p")
+	p=$(art plan); t=$(art tasks); st=$(art_state "$p"); tst=$(art_state "$t")
 	case $st in
 		missing) render plan.md "$p" ;;
 		draft) [ -n "$(fm_get "$p" previous)" ] && mode=amend ;;
-		approved) die "plan.md is already approved — to change it, use /amend" ;;
-		*) die "plan.md is $st — /amend, or reopen it from a terminal: .claude/scripts/approve.sh reopen plan --reason '…'" ;;
+		approved)
+			case $tst in
+				approved) die "plan.md and tasks.md are already approved — to change them, use /change" ;;
+				missing | draft) mode=tasks ;;
+				*) die "tasks.md is $tst — /change, or reopen it from a terminal: .claude/scripts/approve.sh reopen tasks --reason '…'" ;;
+			esac ;;
+		*) die "plan.md is $st — /change, or reopen it from a terminal: .claude/scripts/approve.sh reopen plan --reason '…'" ;;
 	esac
+	[ -f "$t" ] || render tasks.md "$t"
+	[ "$mode" = new ] && [ -n "$(fm_get "$t" previous)" ] && mode=amend
 	echo "GATE plan: OK"
 	echo "FEATURE $F"
 	echo "MODE $mode"
 	echo "MODEL $(cfg MODEL_PLANNER)"
-	echo "CHANGE-REQUESTS $(pending_crs | tr '\n' ' ')"
-}
-
-gate_tasks() {
-	local e t st mode=new
-	e=$(chain_errors plan) || die "the tasker stops here — $e"
-	t=$(art tasks); st=$(art_state "$t")
-	case $st in
-		missing) render tasks.md "$t" ;;
-		draft) [ -n "$(fm_get "$t" previous)" ] && mode=amend ;;
-		approved) die "tasks.md is already approved — to change it, use /amend" ;;
-		*) die "tasks.md is $st — /amend" ;;
-	esac
-	echo "GATE tasks: OK"
-	echo "FEATURE $F"
-	echo "MODE $mode"
 	echo "DONE-TASKS $(done_tasks | tr '\n' ' ')"
 	echo "CHANGE-REQUESTS $(pending_crs | tr '\n' ' ')"
 }
@@ -302,7 +327,7 @@ cmd_gate() {
 	# shellcheck disable=SC2086
 	if [ "$what" = implement ]; then parse_run_flags $flags; check_effective_cfg; fi
 	case $what in
-		plan) gate_plan ;; tasks) gate_tasks ;; implement) gate_implement ;; amend) gate_amend ;;
+		plan | tasks) gate_plan ;; implement) gate_implement ;; amend) gate_amend ;;
 		*) die "usage: gate plan|tasks|implement|amend [feature]" ;;
 	esac
 }
@@ -318,7 +343,8 @@ cmd_check() {
 			[ -n "$f" ] || die "no draft change request; pass its id (CR-nnn)"
 			out=$(check_change "$f"); rc=$? ;;
 		spec | plan) resolve_feature "${1:-}"; f=$(art "$what"); out=$(check_"$what" "$f" "$mode"); rc=$? ;;
-		tasks | brief) resolve_feature "${1:-}"; f=$(art "$what"); out=$(check_"$what" "$f"); rc=$? ;;
+		tasks) resolve_feature "${1:-}"; f=$(art tasks); out=$(check_tasks "$f" "$mode"); rc=$? ;;
+		brief) resolve_feature "${1:-}"; f=$(art brief); out=$(check_brief "$f"); rc=$? ;;
 		*) die "usage: check spec|plan|tasks|brief [--draft] | check change [CR-nnn]" ;;
 	esac
 	if [ $rc = 0 ]; then echo "OK: $f passes the $mode checks"; else echo "NOT READY: $f"; printf '%s\n' "$out"; fi
@@ -341,12 +367,14 @@ pre_task() { # id -> 0 ok (base recorded) | 1 with STOP-REASON lines
 			return 1
 		fi
 	fi
-	if [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
-		run_verify || { echo "STOP-REASON verify is red at the start of $id — the previous change broke something:"; tail -20 "$(VLOG)"; return 1; }
+	# VERIFY=task proves every HEAD a task starts from (a commit of yours in between included);
+	# the other policies verify less often on purpose, so a hand commit waits for their next run
+	if [ "$(cfg VERIFY)" = task ] && [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
+		run_verify "before $id" || { echo "STOP-REASON verify is red at the start of $id — the previous change broke something:"; tail -20 "$(VLOG)"; return 1; }
 	fi
 	sfile_set "base.$id" "$(git rev-parse HEAD)"
 	sfile_set "rounds.$id" 0
-	rm -f "$(sdir)/findings.$id" "$(sdir)/watch.$id"
+	rm -f "$(sdir)/findings.$id" "$(sdir)/watch.$id" "$(sdir)/reason.$id"
 	state_set "$id" IN-PROGRESS
 	[ "$id" = Q ] || state_set BRANCH CLEARED
 	log_event "$id pre-task ok base=$(short)"
@@ -411,8 +439,12 @@ EOF
 "
 	if is_quick; then ce=$(chain_errors brief); else ce=$(chain_errors tasks); fi || pe "approved files no longer match their approval: $ce"
 	if [ "$mode" = full ] && [ $PE = 0 ]; then
-		run_verify || pe "verify is red ($VERIFY_CMD):
+		if verify_due "$id"; then
+			run_verify "after $id" || pe "verify is red ($VERIFY_CMD):
 $(tail -25 "$(VLOG)")"
+		else
+			log_event "$id verify deferred (VERIFY=$(cfg VERIFY))"
+		fi
 	fi
 	sfile_set "watch.$id" "$w"
 	[ -n "$w" ] && printf '%s' "$w"
@@ -452,19 +484,44 @@ review_reason() { # id -> one line why; returns 0 when the task gets a reviewer
 		always) echo "reviewed: the task says Review: always"; return 0 ;;
 		skip) echo "skipped: the task says Review: skip"; return 1 ;;
 	esac
+	# a quick change has no branch review, so its one review stands in for it: only REVIEW=none skips it
+	[ "$id" = Q ] && { echo "reviewed: a quick change's review is its branch review"; return 0; }
 	case $pol in
 		every) echo "reviewed: REVIEW=every"; return 0 ;;
-		branch)
-			[ "$id" = Q ] && { echo "reviewed: a quick change has no branch review"; return 0; }
-			echo "skipped: REVIEW=branch (the branch review covers it)"; return 1 ;;
-		*) echo "reviewed: REVIEW=$pol"; return 0 ;;
+		branch) echo "skipped: REVIEW=branch (the branch review covers it)"; return 1 ;;
 	esac
+	risk_reason "$id"
+}
+
+risk_reason() { # id -> REVIEW=risk: reviewed if high risk, big, watched, or touching REVIEW_GLOBS
+	local id=$1 base n max w p globs
+	if [ "$id" != Q ] && [ "$(task_field "$(art tasks)" "$id" Risk | tr '[:upper:]' '[:lower:]')" = high ]; then
+		echo "reviewed: the task says Risk: high"; return 0
+	fi
+	base=$(sfile_get "base.$id")
+	n=$(git diff --numstat "$base" HEAD 2>/dev/null | awk '{ n += $1 + $2 } END { print n + 0 }')
+	max=$(cfg REVIEW_LINES)
+	[ "$n" -gt "$max" ] && { echo "reviewed: $n changed lines (REVIEW_LINES=$max)"; return 0; }
+	w=$(sfile_get "watch.$id" | awk 'NF { print; exit }')
+	[ -n "$w" ] && { echo "reviewed: ${w#WATCH }" | sed 's/ — reviewer:.*//'; return 0; }
+	globs=$(cfg REVIEW_GLOBS)
+	if [ -n "$globs" ]; then
+		while IFS= read -r p; do
+			[ -n "$p" ] && match_globs "$p" "$globs" && { echo "reviewed: touched $p (REVIEW_GLOBS)"; return 0; }
+		done <<EOF
+$(git diff --name-only "$base" HEAD 2>/dev/null)
+EOF
+	fi
+	echo "skipped: low risk ($n changed lines, no watched files)"
+	return 1
 }
 
 after_implemented() { # id -> ACTION review, or PASS without a reviewer
-	local why
-	if why=$(review_reason "$1"); then
-		log_event "$1 $why"; act_review "$1"
+	local why rc=0
+	why=$(review_reason "$1") || rc=1
+	sfile_set "reason.$1" "$why"
+	if [ $rc = 0 ]; then
+		log_event "$1 $why"; echo "$1 $why"; act_review "$1"
 	else
 		state_set "$1" PASS "$(short)"; [ "$1" = Q ] || state_set BRANCH CLEARED
 		log_event "$1 PASS without review — $why"
@@ -561,9 +618,9 @@ cmd_start() {
 	rm -f "$(sdir)/paused"
 	if [ -n "$sid" ]; then sfile_set lock "$sid $(now)"; fi
 	log_event "RUN START head=$(short) session=${sid:-none}"
-	if [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
+	if [ "$(cfg VERIFY)" = task ] && [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
 		echo "Running verify on HEAD: $VERIFY_CMD"
-		if ! run_verify; then
+		if ! run_verify "before the first task"; then
 			tail -30 "$(VLOG)"
 			log_event "STOP verify red before the first task"
 			rm -f "$(sdir)/lock"
@@ -600,6 +657,7 @@ cmd_next() {
 		else printf '%s\n' "$out"; log_event "STOP pre-task $id"; echo "ACTION stop pre-task $id"; fi
 		return 0
 	done
+	final_verify || return 0
 	[ "$(cfg REVIEW)" = none ] && { echo "ACTION finish"; return 0; }
 	case $(state_get BRANCH) in PASS | FIX | ESCALATE) echo "ACTION finish" ;; *) act_review BRANCH ;; esac
 }
@@ -697,23 +755,65 @@ cmd_pause() { # [--now] [--session ID] [feature] — the run stops at the next t
 
 cmd_unlock() { if soft_feature "${1:-}"; then release_lock; else rm -f "$STATE_ROOT"/*/lock; fi; echo "orchestrator lock released"; }
 
-cmd_task() {
-	local id=${1:-} r
+mutation_line() { # id -> whether the implementer runs a mutation check, and why
+	local m; m=$(cfg MUTATION)
+	case $m in
+		every) echo "MUTATION required (MUTATION=every)" ;;
+		off) echo "MUTATION skip (MUTATION=off)" ;;
+		*)
+			if [ "$1" != Q ] && [ "$(task_field "$(art tasks)" "$1" Risk | tr '[:upper:]' '[:lower:]')" = high ]; then echo "MUTATION required (Risk: high, MUTATION=risk)"
+			else echo "MUTATION skip (MUTATION=risk and the task is not Risk: high)"; fi ;;
+	esac
+}
+
+paragraphs_naming() { # file section "AC1|AC3" -> the section's paragraphs that mention one of the ids
+	fm_body "$1" | awk '{ print } END { print "" }' | strip_comments | sec_raw "$2" \
+		| R="$3" awk 'BEGIN { RS = ""; re = "(^|[^A-Za-z0-9])(" ENVIRON["R"] ")([^0-9]|$)" } $0 ~ re { print; print "" }'
+}
+
+cmd_task() { # the context pack: everything one task needs, so agents read more only when they must
+	local id=${1:-} r b acs re a eids
 	resolve_feature; [ -n "$id" ] || die "usage: task <ID>"
 	r=$(sfile_get "rounds.$id")
 	echo "FEATURE $F   KIND $(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)   ROUND ${r:-0}/$(cfg FIX_ROUNDS)"
+	model_for "$id"
+	echo "SETTINGS model=$CV   review=$(cfg REVIEW)   verify=$(cfg VERIFY) (the script runs it — you run targeted tests only)"
+	mutation_line "$id"
 	if [ "$id" = Q ]; then
-		echo "UNIT the whole brief: $(art brief)"; doc "$(art brief)"
-		echo; echo "COMMIT TRAILERS (required, as the last lines of every commit message):"
-		echo "Task: Q"; echo "Feature: $F"
+		echo; echo "## The brief ($(art brief))"; doc "$(art brief)"
 	else
 		task_block "$(art tasks)" "$id" | grep -q . || die "no task $id in $(art tasks)"
-		task_block "$(art tasks)" "$id"
-		echo; echo "COMMIT TRAILERS (required, as the last lines of every commit message):"
-		echo "Task: $id"; echo "Feature: $F"
-		echo "AC: $(task_field "$(art tasks)" "$id" AC)"
+		echo; echo "## Task"; task_block "$(art tasks)" "$id"
+		acs=$(task_field "$(art tasks)" "$id" AC | ac_refs)
+		re=$(printf '%s\n' $acs | paste -sd'|' -)
+		echo; echo "## Its acceptance criteria ($(art spec))"
+		for a in $acs; do _ac_text "$(art spec)" | ac_line "$a"; done
+		echo; echo "## Edge cases that concern it"
+		eids=$(task_block "$(art tasks)" "$id" | grep -oE 'E[0-9]+' | sort -u | paste -sd'|' -)
+		section "$(art spec)" "Edge cases" | E="$eids" R="${re:-NONE}" awk '
+			BEGIN { re = "(^|[^A-Za-z0-9])(" ENVIRON["R"] ")([^0-9]|$)"; if (ENVIRON["E"] != "") ee = "[*][*](" ENVIRON["E"] ")[*][*]" }
+			$0 ~ re || (ee != "" && $0 ~ ee) { print }'
+		if [ -f "$(art plan)" ]; then
+			echo; echo "## Plan — approach"; section "$(art plan)" "Approach"
+			if [ -n "$re" ]; then
+				echo; echo "## Plan — design paragraphs that name its ACs"; paragraphs_naming "$(art plan)" "Design" "$re"
+				echo "## Plan — AC coverage"; section "$(art plan)" "AC coverage" | grep -E "(^|[^A-Za-z0-9])($re)([^0-9]|$)"
+			fi
+		fi
 	fi
-	echo "VERIFY .claude/scripts/loop.sh verify   ($VERIFY_CMD)"
+	if [ -f "$(art research)" ]; then
+		echo; echo "## Answered questions (research.md)"
+		section "$(art research)" "Open questions" | awk '/^[[:space:]]*[-*][[:space:]]+\*\*Q[0-9]+\*\*/ { on = ($0 ~ /\(answered\)/) } on { print }'
+	fi
+	b=$(base_branch)
+	echo; echo "## Recent task commits"
+	git log "$b..HEAD" --grep='^Task: ' -3 --format='@@%h %s%n%b' 2>/dev/null \
+		| awk '/^@@/ { print "  " substr($0, 3); want = 1; next } want && NF && $0 !~ /^[A-Za-z-]+: / { print "      " $0; want = 0 }'
+	echo; echo "COMMIT TRAILERS (required, as the last lines of every commit message):"
+	echo "Task: $id"; echo "Feature: $F"
+	[ "$id" = Q ] || echo "AC: $(task_field "$(art tasks)" "$id" AC)"
+	if [ -n "$TEST_CMD" ]; then echo "TESTS run only the tests this task touches: .claude/scripts/loop.sh test <args>   ($TEST_CMD)"
+	else echo "TESTS run only the tests this task touches, with the repo's test command scoped to the packages you change"; fi
 }
 
 cmd_post_check() { # the post-task contract without verify (agents self-check; the SubagentStop hook uses it)
@@ -738,6 +838,7 @@ cmd_review_info() {
 			git diff --stat "$mb" HEAD | tail -25
 			git diff --name-only "$mb" HEAD | while IFS= read -r p; do match_globs "$p" "$WATCHED_GLOBS" && echo "WATCH changed $p"; done
 			git diff --name-only --diff-filter=D "$mb" HEAD | while IFS= read -r p; do match_globs "$p" "$TEST_GLOBS" && echo "WATCH deleted test file $p"; done
+			verify_line
 			;;
 		*)
 			base=$(sfile_get "base.$id"); [ -n "$base" ] || die "no base recorded for $id"
@@ -751,8 +852,14 @@ cmd_review_info() {
 			echo "ROUND $(sfile_get "rounds.$id")/$(cfg FIX_ROUNDS)"
 			git diff --stat "$base" HEAD | tail -25
 			sfile_get "watch.$id"
+			verify_line
 			;;
 	esac
+}
+
+verify_line() { # the script's verify result for HEAD — reviewers report it, they never re-run it
+	if [ "$(sfile_get green)" = "$(git rev-parse HEAD)" ]; then echo "VERIFY green at $(short) — run by loop.sh ($VERIFY_CMD); don't run it again"
+	else echo "VERIFY not run at $(short) yet (VERIFY=$(cfg VERIFY)) — loop.sh runs it before the branch review; don't run it yourself"; fi
 }
 
 cmd_verify() {
@@ -828,12 +935,13 @@ cmd_report() {
 			case $st in
 				NEEDS-HUMAN) printf '  %s  NEEDS-HUMAN  %s — check by hand: %s\n' "$id" "$title" "$(task_field "$(art tasks)" "$id" Manual)" ;;
 				BLOCKED) printf '  %s  BLOCKED %s  %s — %s\n' "$id" "$d" "$title" "$(section "$(art research)" "Open questions" | grep -F "**$d**" | head -1)" ;;
-				*) printf '  %s  %-12s %s %s(fix rounds: %s)\n' "$id" "$st" "$title" "${d:+$d }" "$(sfile_get "rounds.$id")" ;;
+				*) printf '  %s  %-12s %s %s(fix rounds: %s)%s\n' "$id" "$st" "$title" "${d:+$d }" "$(sfile_get "rounds.$id")" "$(r=$(sfile_get "reason.$id"); [ -n "$r" ] && printf ' — %s' "$r")" ;;
 			esac
 		done
 		if [ "$(cfg REVIEW)" = none ]; then echo "Reviews: off (REVIEW=none) — no task or branch review ran"
 		else echo "Branch review: $(state_get BRANCH | sed 's/^CLEARED$/not run since the last change/; s/^$/not run/')"; fi
 	fi
+	[ "$(cfg VERIFY)" = off ] && echo "Verify: OFF (VERIFY=off) — nothing proved the repo healthy; run .claude/scripts/loop.sh verify before you open the PR"
 	end=$(grep -E ' (STOP|RUN END)' "$(sdir)/run.log" 2>/dev/null | tail -1)
 	[ -n "$end" ] && echo "Run: $end"
 	q=$(section "$(art research)" "Open questions" | grep '(open)')
@@ -865,6 +973,7 @@ case $cmd in
 	new) cmd_new "$@" ;;
 	status) cmd_status "$@" ;;
 	config) cmd_config "$@" ;;
+	cfg) soft_feature || F=""; [ -n "${1:-}" ] || die "usage: cfg <KEY>"; cfg "$1" ;;
 	suggest-verify) suggest_verify ;;
 	gate) cmd_gate "$@" ;;
 	check) cmd_check "$@" ;;

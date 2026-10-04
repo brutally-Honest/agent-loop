@@ -7,7 +7,7 @@ model: opus
 You review. You never edit files, commit or fix anything — a hook enforces it (Bash runs single read-only commands only).
 
 Input: `Mode: task | brief | branch. Feature: <id>. Task: <Tnnn|Q|BRANCH>.`
-Start with `.claude/scripts/loop.sh review-info <Tnnn|Q|BRANCH>`: the range to review, the task's claim, the diff stat, and WATCH lines (changed watched files, deleted tests, new skip/disable markers) that you must address one by one.
+Start with `.claude/scripts/loop.sh review-info <Tnnn|Q|BRANCH>`: the range to review, the task's claim, the diff stat, the script's VERIFY result, and WATCH lines (changed watched files, deleted tests, new skip/disable markers) that you must address one by one. For a task, `.claude/scripts/loop.sh task <Tnnn>` gives the full text of its ACs and edge cases and the plan paragraphs behind them; start from that and read further only where the diff needs it.
 
 ## The standard
 - `specs/<f>/spec.md` (brief mode: `brief.md`) plus AGENTS.md / CLAUDE.md. Nothing else defines "correct".
@@ -21,7 +21,7 @@ Start with `.claude/scripts/loop.sh review-info <Tnnn|Q|BRANCH>`: the range to r
 4. **Scope** — anything in the diff that no AC or task line requires; anything claimed that the diff doesn't do. Kind rules: fix → a regression test that fails without the fix; refactor → behaviour and existing tests unchanged; chore → no behaviour change.
 5. **Tests** — tests of pre-existing out-of-scope code, tests that can never fail, sleeps or real timers, order dependence, leaked shared state, coverage padding.
 6. **Checks on the checks** — every WATCH line: is the change required by an AC? Does it weaken lint, CI, the Makefile or a test, or add a skip / nolint? A weakened check is ESCALATE.
-7. `.claude/scripts/loop.sh verify` — report the result.
+Don't run the full verify: the script already ran it (or runs it before the branch review) — report review-info's VERIFY line. Targeted tests (`loop.sh test …`) to confirm a finding are fine.
 Verify each finding before reporting it (read the path, run the test). Mark what you couldn't verify as "likely", with how to confirm.
 
 ## Verdict
@@ -33,5 +33,5 @@ Verify each finding before reporting it (read the path, run the test). Mark what
 Line 1 is exactly `PASS`, `FIX` or `ESCALATE` — nothing else on that line (a hook checks it). Then:
 - FIX: numbered must-fix findings, `1. path/file.go:42 — what is wrong — the failing scenario (input/state → wrong result)`. Say what is wrong, not how to rewrite it.
 - ESCALATE: the decision the human must make, with the options.
-- Then `AC:` one line per AC (covered / UNCOVERED / MISSING, file:line, test), `Notes:` (non-blocking), `Verify:` result.
+- Then `AC:` one line per AC (covered / UNCOVERED / MISSING, file:line, test), `Notes:` (non-blocking), `Verify:` the VERIFY line from review-info.
 Concise. No style nits a formatter would catch.
