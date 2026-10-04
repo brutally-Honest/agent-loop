@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# guard.sh — PreToolUse hook (Bash, Edit, Write, MultiEdit, NotebookEdit).
+# guard.sh — PreToolUse hook (Bash, Edit, Write, MultiEdit, NotebookEdit, Read, Agent).
 #
-# One policy for every session in the repo. The role comes from the hook input's
-# agent_type (the subagent's name; "main" when absent), so each agent's limits are
-# enforced by code, not by its prompt:
+# Opt-in enforcement. The role comes from the hook input's agent_type (the subagent's
+# name; "main" when absent):
 #
-#   everyone      approve.sh is human-only; .claude/ kit core and .agent-loop/ state are
-#                 never written by Claude; approved spec/plan/tasks/brief/CR files are
-#                 frozen; nobody writes approval fields (status: approved, sha256, ...).
-#   reviewer, spec-critic          read-only: no edits; single allow-listed read commands.
-#   planner, tasker, impact-analyst read-only except their own file (plan.md / tasks.md /
+#   everyone      approve.sh is human-only, and nobody writes approval fields
+#                 (status: approved, sha256, fingerprint, ...) into specs/ files.
+#   main session  free — unless it holds a run flag (.agent-loop/<f>/lock with its session
+#                 id): then it orchestrates only (no code edits, no git writes, loop.sh calls).
+#   other agents  (Explore, general-purpose, your own agents) treated like the main session
+#                 outside a run: free, bar the two rules above.
+#   kit agents    always constrained, run or no run:
+#     reviewer, spec-critic          read-only: no edits; single allow-listed read commands.
+#     planner, tasker, impact-analyst read-only except their own file (plan.md / tasks.md /
 #                 changes/CR-*.md), and only when the upstream artifact is approved.
-#   implementer, quick-builder     code anywhere except specs/ (bar research.md), .claude/,
+#     implementer, quick-builder     code anywhere except specs/ (bar research.md), .claude/,
 #                 PROTECTED_GLOBS; git writes only in the exact shapes a task commit needs.
-#   main session  free, except while it holds a /implement run lock: then it may not edit
-#                 code or change git state (the orchestrator dispatches; agents build).
+#     all of them: no .claude/ or .agent-loop/ writes, no reading secrets (.env*, keys).
 #
-# Decisions: deny (blocked, reason shown to Claude), allow (only for the exact git
-# shapes below), or no output (normal permission flow). Needs jq: without it every
-# call is denied, so a missing jq can't silently switch the policy off.
+# Decisions: deny (blocked, reason shown to Claude), allow (only for the exact shapes
+# below), or no output (normal permission flow). Needs jq: without it every call is
+# denied, so a missing jq can't silently switch the policy off.
 set -u
 input=$(cat)
 
@@ -42,8 +44,9 @@ case $role in
 	reviewer | spec-critic) class=reader ;;
 	planner | tasker | impact-analyst) class=writer ;;
 	main) class=main ;;
-	*) class=other ;;   # built-in or unrelated agents: treated like the main session
+	*) class=other ;;   # built-in or your own agents: free outside the kit's rules for everyone
 esac
+kit() { case $class in builder | reader | writer) return 0 ;; esac; return 1; }
 
 [ -n "$cwd" ] && cd "$cwd" 2>/dev/null
 git rev-parse --show-toplevel >/dev/null 2>&1 || pass   # not a git repo: no policy
@@ -52,11 +55,34 @@ git rev-parse --show-toplevel >/dev/null 2>&1 || pass   # not a git repo: no pol
 al_init
 [ -n "${AGENT_LOOP_DEBUG:-}" ] && { mkdir -p "$STATE_ROOT"; printf '%s guard %s\n' "$(date -u +%H:%M:%S)" "$input" >> "$STATE_ROOT/hook-debug.log"; }
 
+# the main session orchestrates a run only while it holds that run's flag
 locked=0
-if [ -n "$sid" ] && [ -d "$STATE_ROOT" ]; then
+if [ "$class" = main ] && [ -n "$sid" ] && [ -d "$STATE_ROOT" ]; then
 	for l in "$STATE_ROOT"/*/lock; do
-		[ -f "$l" ] && [ "$(cat "$l")" = "$sid" ] && locked=1
+		[ -f "$l" ] || continue
+		read -r lsid _ < "$l" || true
+		[ "$lsid" = "$sid" ] && locked=1
 	done
+fi
+RUNMSG="this session is running an agent-loop build: it only dispatches agents and runs loop.sh. To work normally, interrupt with Esc (or type any message) — the run pauses; /resume continues it."
+
+secret() { # path -> 0 if it looks like a secret file
+	local b=${1##*/}
+	case $b in .env | .env.* | *.pem | *.key | id_rsa* | id_ed25519*) return 0 ;; esac
+	return 1
+}
+
+# ------------------------------------------------------------------------------- Read
+if [ "$tool" = Read ]; then
+	kit || pass
+	p=$(jq -r '.tool_input.file_path // ""' <<<"$input")
+	secret "$p" && deny "$role may not read secret files (${p##*/}). If the task needs a value from it, say so in your report."
+	pass
+fi
+
+# ------------------------------------------------------------------------------ Agent
+if [ "$tool" = Agent ] || [ "$tool" = Task ]; then
+	pass
 fi
 
 # ------------------------------------------------------------------------------- Bash
@@ -72,25 +98,41 @@ if [ "$tool" = Bash ]; then
 	loopsh() { has '^\.claude/scripts/loop\.sh( |$)'; }
 
 	has 'approve\.sh' && deny "approve.sh is human-only — the user types /approve (or runs it in a terminal)."
+	has '(^|[^[:alnum:]_-])git[[:space:]].*commit.*(: approve |: auto-approve )' \
+		&& deny "approval commits are made by approve.sh only — the user types /approve."
+
+	GIT_WRITE='push|reset|rebase|checkout|switch|merge|tag|worktree|config|update-ref|filter-branch|filter-repo|clean|cherry-pick|revert|remote|fetch|pull|gc|prune|replace|reflog|submodule|am|apply|notes'
+
+	if ! kit; then
+		[ $locked = 1 ] || pass
+		loopsh && single && allow "loop.sh $(printf '%s' "$cmd" | awk '{ print $2 }')"
+		has "(^|[^[:alnum:]_-])git([[:space:]]+(-[^[:space:]]+|[^[:space:]-][^[:space:]]*=[^[:space:]]*))*[[:space:]]+($GIT_WRITE|add|commit|restore|stash|rm|mv)([[:space:]]|\$)" && deny "$RUNMSG"
+		writes && deny "$RUNMSG"
+		pass
+	fi
+
+	# --- kit agents from here on
+	set -f
+	for w in $(printf '%s' "$cmd" | sed "s/[\"'=<>|;&()]/ /g"); do
+		secret "$w" && deny "$role may not read secret files (${w##*/}). If the task needs a value from it, say so in your report."
+	done
+	set +f
 	# a mention of .claude/ or .agent-loop/ only counts when it isn't a loop.sh call or the commit-message scratch files
 	kitrest=$(printf '%s' "$cmd" | sed -E 's#(\./|/[^[:space:]]*/)?\.claude/scripts/loop\.sh##g')
 	staterest=$(printf '%s' "$cmd" | sed -E 's#\.agent-loop/(commit-msg|note|scratch/[^[:space:]]*)##g')
-	if printf '%s' "$kitrest" | grep -q '\.claude/' && writes; then deny "the agent-loop kit under .claude/ is edited by the human, not by Claude."; fi
+	if printf '%s' "$kitrest" | grep -q '\.claude/' && writes; then deny "the agent-loop kit under .claude/ is not edited by agents."; fi
 	if printf '%s' "$staterest" | grep -q '\.agent-loop' && writes; then deny ".agent-loop/ holds loop state; only loop.sh writes it."; fi
 
 	# loop.sh is the loop's own tool: approve well-formed single calls per role, whatever the spelling
 	if loopsh && single; then
 		sub=$(printf '%s' "$cmd" | awk '{ print $2 }')
 		case $class:$sub in
-			main:* | other:*) allow "loop.sh $sub" ;;
-			builder:verify | builder:test | builder:status | builder:check | builder:task | builder:findings | builder:post-check | builder:review-info | builder:impact | builder:resolve | builder:lineage | builder:report)
+			builder:verify | builder:test | builder:status | builder:check | builder:task | builder:findings | builder:post-check | builder:review-info | builder:impact | builder:resolve | builder:lineage | builder:report | builder:config)
 				allow "loop.sh $sub" ;;
 		esac
 	fi
 
-	GIT_WRITE='push|reset|rebase|checkout|switch|merge|tag|worktree|config|update-ref|filter-branch|filter-repo|clean|cherry-pick|revert|remote|fetch|pull|gc|prune|replace|reflog|submodule|am|apply|notes'
 	gitsub() { # the git subcommand of a single command, skipping global options
-		local w
 		set -f; set -- $cmd; set +f
 		[ "${1:-}" = git ] || return 0
 		shift
@@ -101,19 +143,17 @@ if [ "$tool" = Bash ]; then
 
 	case $class in
 	reader | writer)
-		if true; then
-			single || deny "$role runs single read-only commands only (no ; & | < > \` \$( or newlines)."
-			has '(^|[[:space:]])(-exec|-execdir|-delete|-ok|-okdir|-fprint|-fprint0|-fls|-fprintf|--output|-o|-coverprofile|-cpuprofile|-memprofile|-trace|-toolexec|-outputdir)([[:space:]=]|$)' \
-				&& deny "$role may not write files or run other programs (flag not allowed)."
-			if has '^git([[:space:]]+(-C[[:space:]]+[^[:space:]]+|--no-pager))*[[:space:]]+(status|diff|show|log|blame|ls-files|ls-tree|rev-parse|rev-list|merge-base|cat-file|grep|shortlog|describe|notes show)([[:space:]]|$)' \
-				|| has '^git branch( (-a|-r|-v|-vv|--all|--list|--remotes|--show-current|--contains|--merged|--no-merged)( [^-][^[:space:]]*)?)*$' \
-				|| has '^\.claude/scripts/loop\.sh (status|check|task|findings|review-info|verify|test|impact|resolve|lineage|report)([[:space:]]|$)' \
-				|| has '^(ls|cat|head|tail|wc|grep|rg|find|tree|stat|file|diff|du|pwd|which|echo)([[:space:]]|$)'; then
-				allow "$role read-only command"
-			fi
-			[ -n "$READONLY_EXTRA_CMDS" ] && has "^($READONLY_EXTRA_CMDS)([[:space:]]|\$)" && allow "$role read-only command (READONLY_EXTRA_CMDS)"
-			deny "$role is read-only: git status/diff/show/log/blame/ls-files, loop.sh status|check|task|review-info|verify|test|impact, ls/cat/grep/rg/find only."
+		single || deny "$role runs single read-only commands only (no ; & | < > \` \$( or newlines)."
+		has '(^|[[:space:]])(-exec|-execdir|-delete|-ok|-okdir|-fprint|-fprint0|-fls|-fprintf|--output|-o|-coverprofile|-cpuprofile|-memprofile|-trace|-toolexec|-outputdir)([[:space:]=]|$)' \
+			&& deny "$role may not write files or run other programs (flag not allowed)."
+		if has '^git([[:space:]]+(-C[[:space:]]+[^[:space:]]+|--no-pager))*[[:space:]]+(status|diff|show|log|blame|ls-files|ls-tree|rev-parse|rev-list|merge-base|cat-file|grep|shortlog|describe|notes show)([[:space:]]|$)' \
+			|| has '^git branch( (-a|-r|-v|-vv|--all|--list|--remotes|--show-current|--contains|--merged|--no-merged)( [^-][^[:space:]]*)?)*$' \
+			|| has '^\.claude/scripts/loop\.sh (status|check|task|findings|review-info|verify|test|impact|resolve|lineage|report|config)([[:space:]]|$)' \
+			|| has '^(ls|cat|head|tail|wc|grep|rg|find|tree|stat|file|diff|du|pwd|which|echo)([[:space:]]|$)'; then
+			allow "$role read-only command"
 		fi
+		[ -n "$READONLY_EXTRA_CMDS" ] && has "^($READONLY_EXTRA_CMDS)([[:space:]]|\$)" && allow "$role read-only command (READONLY_EXTRA_CMDS)"
+		deny "$role is read-only: git status/diff/show/log/blame/ls-files, loop.sh status|check|task|review-info|test|impact, ls/cat/grep/rg/find only."
 		;;
 	builder)
 		has '(^|[^[:alnum:]_-])git[[:space:]].*(--git-dir|--work-tree)|(^|[^[:alnum:]_-])git[[:space:]]+-C[[:space:]]' && deny "$role may not point git at another directory."
@@ -122,7 +162,7 @@ if [ "$tool" = Bash ]; then
 		has '(^|[^[:alnum:]_-])git[[:space:]]+stash[[:space:]]+(drop|clear|pop|apply|branch)' && deny "$role may only 'git stash push' (never drop/pop/apply)."
 		has '(^|[^[:alnum:]_-])git[[:space:]]+commit([[:space:]]+[^[:space:]]+)*[[:space:]]+(--no-verify|-[a-zA-Z]*n[a-zA-Z]*)([[:space:]]|$)' && deny "$role may not skip git hooks (--no-verify / -n)."
 		has '(^|[^[:alnum:]_-])git[[:space:]]+add([[:space:]]+[^[:space:]]+)*[[:space:]]+(-[a-zA-Z]*[Afu][a-zA-Z]*|--all|--force|--update|\.|\./|:/|\*)([[:space:]]|$)' && deny "$role must 'git add' explicit paths (no -A, ., -f, -u)."
-		has '^\.claude/scripts/loop\.sh (start|next|log|stop|finish|unlock|new|cr-new|gate)([[:space:]]|$)' && deny "that loop.sh command belongs to the orchestrator, not to $role."
+		has '^\.claude/scripts/loop\.sh (start|next|log|stop|finish|unlock|new|cr-new|gate|pause|answer|accept)([[:space:]]|$)' && deny "that loop.sh command belongs to the orchestrator, not to $role."
 		has '(^|[^[:alnum:]_-])rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+)*(/|~|\$HOME|\.\.?)([[:space:]]|/?$)' && deny "$role may not delete the repo, home or root."
 		if single; then
 			case $(gitsub) in
@@ -140,13 +180,6 @@ if [ "$tool" = Bash ]; then
 		fi
 		pass
 		;;
-	main | other)
-		if [ $locked = 1 ]; then
-			has "(^|[^[:alnum:]_-])git([[:space:]]+(-[^[:space:]]+|[^[:space:]-][^[:space:]]*=[^[:space:]]*))*[[:space:]]+($GIT_WRITE|add|commit|restore|stash|rm|mv)([[:space:]]|\$)" \
-				&& deny "this session is orchestrating a /implement run: it never changes git state — agents do. (Run is over? .claude/scripts/loop.sh unlock)"
-		fi
-		pass
-		;;
 	esac
 	pass
 fi
@@ -156,24 +189,50 @@ case $tool in Edit | Write | MultiEdit | NotebookEdit) ;; *) pass ;; esac
 
 paths=$(jq -r '[.tool_input | .. | objects | (.file_path?, .notebook_path?) | strings] | unique | .[]' <<<"$input")
 content=$(jq -r '[.tool_input | .. | objects | (.content?, .new_string?, .file_text?, .new_code?, .new_source?) | strings] | join("\n")' <<<"$input")
+removed=$(jq -r '[.tool_input | .. | objects | .old_string? | strings] | join("\n")' <<<"$input")
 
-APPROVAL_FIELDS='^(status:[[:space:]]*approved[[:space:]]*$|(approved|approved-by|sha256|fingerprint|spec-fingerprint|plan-sha256|applied|spec-applied|plan-applied):[[:space:]]*[^[:space:]])'
+APPROVAL_FIELDS='^(status:[[:space:]]*approved[[:space:]]*$|(approved|approved-by|sha256|fingerprint|spec-fingerprint|plan-sha256|plan-fingerprint|applied|spec-applied|plan-applied):[[:space:]]*[^[:space:]])'
+
+sets_approval() { # file -> 0 if this write ADDS or CHANGES an approval field (keeping existing ones is fine)
+	local before new l
+	if [ "$tool" = Write ]; then
+		before=""; [ -f "$1" ] && before=$(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && /^---[[:space:]]*$/ { exit } { print }' "$1")
+		new=$(printf '%s\n' "$content" | awk 'NR == 1 && $0 != "---" { exit } NR > 1 && /^---[[:space:]]*$/ { exit } { print }')
+	else
+		before=$removed; new=$content
+	fi
+	while IFS= read -r l; do
+		[ -n "$l" ] || continue
+		printf '%s\n' "$before" | grep -qxF -- "$l" || return 0
+	done <<EOF
+$(printf '%s\n' "$new" | sed 's/[[:space:]]*$//' | grep -E "$APPROVAL_FIELDS")
+EOF
+	return 1
+}
 
 check_file() { # rel path
 	local rel=$1 f sub name st
-	case $rel in */../* | ../* | */..) deny "use a normalised path (no '..'): $rel" ;; esac
+	case $rel in */../* | ../* | */..) kit && deny "use a normalised path (no '..'): $rel" ;; esac
 
 	case $rel in
-	.claude/*)
-		case $class in
-			main) case $rel in
-					.claude/hooks/* | .claude/scripts/* | .claude/settings.json | .claude/loop.conf)
-						deny "$rel is part of the agent-loop enforcement — edit it yourself, outside Claude." ;;
-				esac
-				[ $locked = 1 ] && deny "this session is orchestrating a /implement run; it does not edit files." ;;
-			*) deny "agents never edit .claude/ ($rel)." ;;
-		esac
-		return 0 ;;
+	"$SPECS_DIR"/*/*.md | "$SPECS_DIR"/*/changes/*.md)
+		sets_approval "$REPO/$rel" \
+			&& deny "only approve.sh sets approval fields (status: approved, approved, sha256, fingerprint, ...). Leave them as they are; the user approves with /approve."
+		;;
+	esac
+
+	if ! kit; then
+		if [ $locked = 1 ]; then
+			case $rel in "$SPECS_DIR"/*/research.md) return 0 ;; esac
+			deny "$RUNMSG"
+		fi
+		return 0
+	fi
+
+	# --- kit agents from here on
+	secret "$rel" && deny "$role may not touch secret files ($rel)."
+	case $rel in
+	.claude/*) deny "agents never edit .claude/ ($rel)." ;;
 	.agent-loop/commit-msg | .agent-loop/note | .agent-loop/scratch/*)
 		case $class in reader | writer) deny "$role is read-only." ;; esac
 		return 0 ;;
@@ -188,43 +247,34 @@ check_file() { # rel path
 			spec.md | plan.md | tasks.md | brief.md | changes/CR-*.md)
 				if [ -f "$f" ]; then
 					st=$(fm_get "$f" status)
-					[ "$st" = approved ] && deny "$rel is approved and frozen. Changes go through /amend (a change request the user approves)."
-				fi
-				printf '%s\n' "$content" | grep -Eq "$APPROVAL_FIELDS" \
-					&& deny "only approve.sh sets approval fields (status: approved, approved, sha256, fingerprint, ...). Leave them empty; the user approves with /approve."
-				;;
+					[ "$st" = approved ] && deny "$rel is approved. Agents don't change approved files; the user changes them (/change)."
+				fi ;;
 		esac
 		case $class in reader) deny "$role is read-only." ;; esac
-		if [ $locked = 1 ] && [ "$class" != builder ] && [ "$class" != writer ]; then
-			[ "$name" = research.md ] || deny "this session is orchestrating a /implement run; it only edits research.md."
-		fi
 		case $name in
 			research.md) return 0 ;;
-			spec.md | brief.md) [ "$class" = main ] || [ "$class" = other ] || deny "only the main session writes $name (with the user, via /spec or /quick)." ;;
+			spec.md | brief.md) deny "only the main session writes $name (with the user, via /spec or /quick)." ;;
 			plan.md)
 				case $role in
 					planner) chain_errors spec >/dev/null || deny "spec.md of $F is not approved — the planner stops here. The user must /approve spec first." ;;
-					main | other) ;;
-					*) deny "only the planner (or the main session) writes plan.md." ;;
+					*) deny "only the planner writes plan.md." ;;
 				esac ;;
 			tasks.md)
 				case $role in
 					tasker) chain_errors plan >/dev/null || deny "plan.md of $F is not approved — the tasker stops here." ;;
-					main | other) ;;
-					*) deny "only the tasker (or the main session) writes tasks.md." ;;
+					*) deny "only the tasker writes tasks.md." ;;
 				esac ;;
-			changes/CR-*.md) case $role in impact-analyst | main | other) ;; *) deny "only the impact-analyst (or the main session) writes change requests." ;; esac ;;
-			*) case $role in planner | main | other) ;; *) deny "$role may only write research.md under $SPECS_DIR/." ;; esac ;;
+			changes/CR-*.md) [ "$role" = impact-analyst ] || deny "only the impact-analyst writes change requests." ;;
+			*) [ "$role" = planner ] || deny "$role may only write research.md under $SPECS_DIR/." ;;
 		esac
 		return 0 ;;
-	"$SPECS_DIR"/*) [ "$class" = main ] || [ "$class" = other ] || deny "$role may not write $rel." ; return 0 ;;
+	"$SPECS_DIR"/*) deny "$role may not write $rel." ;;
 	esac
 
 	# ordinary repository files
 	case $class in
 		reader | writer) deny "$role is read-only outside its own spec file." ;;
 		builder) match_globs "$rel" "$PROTECTED_GLOBS" && deny "$rel is protected (loop.conf PROTECTED_GLOBS) — report it as BLOCKED if the task needs it." ;;
-		main | other) [ $locked = 1 ] && deny "this session is orchestrating a /implement run: it never edits code — the implementer does. (Run is over? .claude/scripts/loop.sh unlock)" ;;
 	esac
 	return 0
 }

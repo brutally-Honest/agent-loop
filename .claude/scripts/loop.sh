@@ -433,7 +433,8 @@ cmd_start() {
 	out=$(gate_implement 2>&1) || { printf '%s\n' "$out"; echo "ACTION stop gate"; exit 1; }
 	case $sid in '' | *'$'* | *CLAUDE_SESSION_ID*) warn "no session id — the orchestrator write-lock is off for this run"; sid="" ;; esac
 	ensure_state
-	if [ -n "$sid" ]; then sfile_set lock "$sid"; fi
+	rm -f "$(sdir)/paused"
+	if [ -n "$sid" ]; then sfile_set lock "$sid $(now)"; fi
 	log_event "RUN START head=$(short) session=${sid:-none}"
 	if [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
 		echo "Running verify on HEAD: $VERIFY_CMD"
@@ -453,6 +454,7 @@ cmd_start() {
 cmd_next() {
 	local id st out
 	resolve_feature
+	if [ -f "$(sdir)/paused" ]; then release_lock; log_event "PAUSED at a task boundary"; echo "ACTION pause"; return 0; fi
 	if is_quick; then
 		st=$(state_get Q)
 		case $st in
@@ -543,6 +545,30 @@ release_lock() { rm -f "$(sdir)/lock"; }
 
 cmd_stop() { resolve_feature; log_event "STOP $*"; release_lock; cmd_report; }
 cmd_finish() { resolve_feature; log_event "RUN END"; release_lock; cmd_report; }
+cmd_pause() { # [--now] [--session ID] [feature] — the run stops at the next task boundary (--now: agents are stopped too)
+	local mode=graceful sid="" feat="" l lsid fs=""
+	while [ $# -gt 0 ]; do
+		case $1 in --now) mode=now ;; --session) sid=${2:-}; shift ;; -*) die "unknown flag $1" ;; *) feat=$1 ;; esac
+		shift
+	done
+	if [ -n "$sid" ]; then
+		for l in "$STATE_ROOT"/*/lock; do
+			[ -f "$l" ] || continue
+			read -r lsid _ < "$l" || true
+			[ "$lsid" = "$sid" ] && fs="$fs $(basename "$(dirname "$l")")"
+		done
+		[ -n "$fs" ] || { echo "no build is running in this session"; return 0; }
+	else
+		resolve_feature "$feat"; fs=$F
+	fi
+	for F in $fs; do
+		sfile_set paused "mode=$mode $(now)"
+		release_lock
+		log_event "PAUSE requested ($mode)"
+		echo "PAUSED $F ($mode) — /resume continues the build"
+	done
+}
+
 cmd_unlock() { if soft_feature "${1:-}"; then release_lock; else rm -f "$STATE_ROOT"/*/lock; fi; echo "orchestrator lock released"; }
 
 cmd_task() {
@@ -698,7 +724,7 @@ cmd_doctor() {
 	chk "sha256sum or shasum" "command -v sha256sum || command -v shasum" "install coreutils"
 	chk "kit committed" "git ls-files --error-unmatch .claude/scripts/loop.sh" "git add .claude .gitignore && git commit"
 	chk "hooks executable" "test -x .claude/hooks/guard.sh -a -x .claude/hooks/on-command.sh -a -x .claude/hooks/on-agent-stop.sh" "chmod +x .claude/hooks/*.sh .claude/scripts/*.sh"
-	chk "settings.json wires the hooks" "jq -e '.hooks.PreToolUse and .hooks.UserPromptExpansion and .hooks.SubagentStop' .claude/settings.json" "merge the kit's settings.json (install.sh does it)"
+	chk "settings.json wires the hooks" "jq -e '.hooks.PreToolUse and .hooks.UserPromptExpansion and .hooks.UserPromptSubmit and .hooks.SubagentStop' .claude/settings.json" "merge the kit's settings.json (install.sh does it)"
 	chk ".agent-loop/ gitignored" "git check-ignore -q .agent-loop/x" "add '.agent-loop/' to .gitignore"
 	chk ".claude/worktrees/ gitignored" "git check-ignore -q .claude/worktrees/x" "add '.claude/worktrees/' to .gitignore"
 	if [ -n "$VERIFY_CMD" ]; then echo "  ok    VERIFY_CMD set"; else echo "  FAIL  $(verify_unset_msg)"; ok=1; fi
@@ -720,6 +746,7 @@ case $cmd in
 	stop) cmd_stop "$@" ;;
 	finish) cmd_finish "$@" ;;
 	unlock) cmd_unlock "$@" ;;
+	pause) cmd_pause "$@" ;;
 	task) cmd_task "$@" ;;
 	findings) cmd_findings "$@" ;;
 	post-check) cmd_post_check "$@" ;;

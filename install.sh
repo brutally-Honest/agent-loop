@@ -42,15 +42,22 @@ done
 chmod +x .claude/hooks/*.sh .claude/scripts/*.sh
 if [ -f .claude/loop.conf ]; then echo "  kept your .claude/loop.conf"; else cp "$KIT/.claude/loop.conf" .claude/loop.conf; fi
 
+# Rules earlier kit versions added and this one dropped (enforcement is opt-in since v0.2).
+# Only these exact strings are removed on upgrade; rules you added yourself always stay.
+OLD_KIT_DENY='["Edit(/.claude/hooks/**)","Edit(/.claude/scripts/**)","Edit(/.claude/settings.json)","Edit(/.claude/loop.conf)","Read(.env)","Read(.env.*)","Read(*.pem)","Read(*.key)","Read(id_rsa*)","Read(id_ed25519*)"]'
 if [ -f .claude/settings.json ]; then
 	tmp=$(mktemp)
-	jq -s '
+	# kit hook entries (they call .claude/hooks/<kit hook>.sh) are replaced, not added twice;
+	# every other hook entry is kept as it is
+	jq -s --argjson olddeny "$OLD_KIT_DENY" '
+		def kithook: [.hooks[]?.command // "" | test("/\\.claude/hooks/(guard|on-command|on-agent-stop|on-prompt)\\.sh")] | any;
 		.[0] as $o | .[1] as $n
 		| ($o * {permissions: {
 				allow: ((($o.permissions.allow // []) + ($n.permissions.allow // [])) | unique),
-				deny:  ((($o.permissions.deny  // []) + ($n.permissions.deny  // [])) | unique)}})
-		| .hooks = (reduce ($n.hooks | keys[]) as $ev (($o.hooks // {});
-				.[$ev] = (((.[$ev] // []) + $n.hooks[$ev]) | unique)))
+				deny:  ((($o.permissions.deny  // []) - $olddeny + ($n.permissions.deny // [])) | unique)}})
+		| .hooks = (reduce ((($o.hooks // {}) | keys) + ($n.hooks | keys) | unique)[] as $ev (($o.hooks // {});
+				.[$ev] = ([(.[$ev] // [])[] | select(kithook | not)] + ($n.hooks[$ev] // []))
+				| if .[$ev] == [] then del(.[$ev]) else . end))
 	' .claude/settings.json "$KIT/.claude/settings.json" > "$tmp"
 	if jq -e --slurpfile a "$tmp" '. == $a[0]' .claude/settings.json >/dev/null; then
 		echo "  .claude/settings.json already up to date"

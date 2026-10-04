@@ -49,6 +49,8 @@ guard() { # role tool-json  -> decision
 	d=$(printf '{%s"tool_name":"%s","tool_input":%s,"cwd":"%s","session_id":"%s"}' "$rj" "$2" "$3" "$T" "${4:-s0}" | $G | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null)
 	echo "${d:-none}"
 }
+ge() { guard "$1" Edit "{\"file_path\":\"$T/$2\",\"old_string\":$(jq -Rn --arg c "$3" '$c'),\"new_string\":$(jq -Rn --arg c "$4" '$c')}" "${5:-s0}"; }
+gr() { guard "$1" Read "{\"file_path\":\"$T/$2\"}" "${3:-s0}"; }
 gb() { guard "$1" Bash "{\"command\":$(jq -Rn --arg c "$2" '$c')}" "${3:-s0}"; }
 gw() { guard "$1" Write "{\"file_path\":\"$T/$2\",\"content\":$(jq -Rn --arg c "${3:-x}" '$c')}" "${4:-s0}"; }
 fill() { python3 - "$@" 2>/dev/null || { echo "python3 is needed by selftest only"; exit 1; }; }
@@ -76,7 +78,7 @@ has "spec approved" "$($L status)" "spec.md   approved v1"
 
 echo "== guard"
 [ "$(gb main ".claude/scripts/approve.sh spec")" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL guard: main may not run approve.sh"; }
-for c in "planner|$D/spec.md|deny" "main|$D/spec.md|deny" "implementer|src/calc.sh|none" "implementer|$D/plan.md|deny" "implementer|.claude/hooks/guard.sh|deny" \
+for c in "planner|$D/spec.md|deny" "main|$D/spec.md|none" "Explore|$D/spec.md|none" "implementer|$D/spec.md|deny" "implementer|src/calc.sh|none" "implementer|$D/plan.md|deny" "implementer|.claude/hooks/guard.sh|deny" \
 	"implementer|.githooks/pre-commit|deny" "reviewer|src/calc.sh|deny" "tasker|$D/tasks.md|deny" "planner|$D/plan.md|none" "implementer|.agent-loop/commit-msg|none" "implementer|.agent-loop/$F/state|deny"; do
 	r=${c%%|*}; rest=${c#*|}; p=${rest%%|*}; e=${rest##*|}
 	d=$(gw "$r" "$p"); [ "$d" = "$e" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL guard: $r write $p → $d (expected $e)"; }
@@ -104,6 +106,28 @@ implementer|.claude/scripts/loop.sh log T001 reviewer PASS|deny
 implementer|.claude/scripts/loop.sh verify|allow
 implementer|go test ./...|none
 EOF
+
+echo "== opt-in enforcement: free outside a run, kit agents always constrained"
+eq() { [ "$2" = "$3" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL $1: got $2, expected $3"; }; }
+eq "main edits the kit outside a run" "$(ge main .claude/scripts/loop.sh 'set -uo pipefail' 'set -euo pipefail')" none
+eq "main edits loop.conf outside a run" "$(gw main .claude/loop.conf 'VERIFY_CMD=x')" none
+eq "main edits an approved spec's body" "$(ge main $D/spec.md 'Users can add but not subtract.' 'Users can add, not subtract.')" none
+eq "main rewrites an approved spec keeping its frontmatter" "$(gw main $D/spec.md "$(cat $D/spec.md)")" none
+eq "main edits source outside a run" "$(gw main src/calc.sh)" none
+eq "main may not stamp status: approved" "$(ge main $D/plan.md 'status: draft' 'status: approved')" deny
+eq "other agents may not stamp sha256" "$(ge general-purpose $D/spec.md 'sha256:' 'sha256: abc')" deny
+eq "implementer may not edit the kit" "$(ge implementer .claude/scripts/loop.sh 'a' 'b')" deny
+eq "implementer may not edit spec.md" "$(ge implementer $D/spec.md 'Users' 'People')" deny
+eq "non-kit agent may edit spec.md outside a run" "$(ge Explore $D/spec.md 'Users' 'People')" none
+for r in main implementer reviewer general-purpose; do
+	eq "$r may not run approve.sh" "$(gb $r ".claude/scripts/approve.sh spec")" deny
+	eq "$r may not run approve.sh (abs path)" "$(gb $r "bash $T/.claude/scripts/approve.sh spec")" deny
+done
+eq "main may not forge an approval commit" "$(gb main "git commit -m 'docs(x): approve spec v1'")" deny
+eq "implementer may not read .env" "$(gr implementer .env)" deny
+eq "reviewer may not cat a key" "$(gb reviewer "cat deploy/server.key")" deny
+eq "main may read .env (its own permission rules apply)" "$(gr main .env)" none
+eq "main runs git freely outside a run" "$(gb main "git commit -am wip")" none
 
 echo "== /plan-feature"
 ok $L gate plan
@@ -162,6 +186,22 @@ ok $L gate implement
 has start "$($L start --session s1)" "ACTION next"
 [ "$(gw main src/calc.sh x s1)" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL locked orchestrator may not edit code"; }
 [ "$(gb main "git commit -am x" s1)" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL locked orchestrator may not commit"; }
+eq "run flag holds the session id" "$(cut -d' ' -f1 .agent-loop/$F/lock)" s1
+eq "orchestrator runs loop.sh" "$(gb main ".claude/scripts/loop.sh next" s1)" allow
+eq "orchestrator may not write files via bash" "$(gb main "echo x > src/calc.sh" s1)" deny
+eq "orchestrator may not edit the kit either" "$(ge main .claude/loop.conf a b s1)" deny
+eq "approve.sh denied during a run too" "$(gb main ".claude/scripts/approve.sh spec" s1)" deny
+eq "another session is not the orchestrator" "$(gw main src/calc.sh x s9)" none
+eq "a non-kit agent is free during a run" "$(gw Explore src/calc.sh x s1)" none
+eq "kit agent still constrained during a run" "$(ge implementer $D/spec.md a b s1)" deny
+prompt() { printf '{"session_id":"%s","cwd":"%s","prompt":%s}' "$1" "$T" "$(jq -Rn --arg p "$2" '$p')" | .claude/hooks/on-prompt.sh; }
+eq "a kit command doesn't pause the run" "$(prompt s1 '/status')" ""
+eq "another session's prompt doesn't pause it" "$(prompt s9 'hello')" ""
+has "a plain prompt pauses the run" "$(prompt s1 'actually, rename sub to minus')" "build was paused"
+bad test -f .agent-loop/$F/lock
+eq "after the auto-pause the main session edits code" "$(gw main src/calc.sh x s1)" none
+has "paused run: next says pause" "$($L next)" "ACTION pause"
+has "restart clears the pause" "$($L start --session s1)" "ACTION next"
 has next "$($L next)" "ACTION implement T001"
 echo 'sub() { echo $(( $1 - $2 )); }' >> src/calc.sh
 printf 'feat(calc): add sub\n' > .agent-loop/commit-msg; git add src/calc.sh && git commit -qF .agent-loop/commit-msg
@@ -266,6 +306,26 @@ has "approve hook refuses" "$out" '"block"'
 out=$(printf '{"command_name":"plan-feature","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
 has "gate hook blocks /plan-feature on a quick feature" "$out" '"block"'
 has "quick next" "$($L start --session s2 >/dev/null; $L next)" "ACTION implement Q"
+
+echo "== install.sh upgrade over a v0.1 settings.json"
+U=$(mktemp -d "$X/up.XXXXXX"); (cd "$U" && git init -q)
+mkdir -p "$U/.claude"
+cat > "$U/.claude/settings.json" <<'JSON'
+{"permissions":{"allow":["Bash(make *)"],"deny":["Bash(*approve.sh*)","Edit(/.claude/hooks/**)","Edit(/.claude/scripts/**)","Edit(/.claude/settings.json)","Edit(/.claude/loop.conf)","Read(.env)","Read(.env.*)","Read(*.pem)","Read(*.key)","Read(id_rsa*)","Read(id_ed25519*)","Bash(rm -rf *)"]},
+ "hooks":{"PreToolUse":[{"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.sh","args":[],"timeout":30}]},{"matcher":"Bash","hooks":[{"type":"command","command":"my-own-hook.sh"}]}],
+ "UserPromptExpansion":[{"matcher":"approve|plan-feature|implement|amend","hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/hooks/on-command.sh","args":[],"timeout":300}]}]}}
+JSON
+"$KIT/install.sh" "$U" >/dev/null
+us=$(cat "$U/.claude/settings.json")
+eq "upgrade drops every v0.1 kit deny" "$(jq -c '[.permissions.deny[] | select(startswith("Edit(") or startswith("Read("))] | length' <<<"$us")" 0
+eq "upgrade keeps the user's deny" "$(jq -c '.permissions.deny | index("Bash(rm -rf *)") != null' <<<"$us")" true
+eq "upgrade keeps the approve.sh deny" "$(jq -c '.permissions.deny | index("Bash(*approve.sh*)") != null' <<<"$us")" true
+eq "upgrade keeps the user's hook" "$(jq -c '[.hooks.PreToolUse[].hooks[].command] | index("my-own-hook.sh") != null' <<<"$us")" true
+eq "upgrade has one guard entry" "$(jq -c '[.hooks.PreToolUse[].hooks[].command | select(test("guard.sh"))] | length' <<<"$us")" 1
+eq "upgrade has one on-command entry" "$(jq -c '[.hooks.UserPromptExpansion[].hooks[].command] | length' <<<"$us")" 1
+eq "upgrade adds the prompt hook" "$(jq -c '[.hooks.UserPromptSubmit[].hooks[].command | select(test("on-prompt.sh"))] | length' <<<"$us")" 1
+"$KIT/install.sh" "$U" >/dev/null
+eq "install is idempotent" "$(cat "$U/.claude/settings.json")" "$us"
 
 echo
 if [ "$fail" = 0 ]; then echo "selftest: all $pass checks passed"; cd / && rm -rf "$T"; exit 0; fi

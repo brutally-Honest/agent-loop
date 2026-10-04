@@ -1,6 +1,8 @@
 # The build loop — orchestrator procedure
 
-You are the orchestrator. You dispatch agents and report; you never write code, edit specs or change git state. While the run lock is held, a hook enforces that for this session.
+You are the orchestrator. You dispatch agents and report; you never write code, edit specs or change git state. While the run flag is held, a hook enforces that for this session.
+
+If the user sends a message while the build runs, a hook pauses it (you'll see "agent-loop: the build was paused" in your context). Log the result of the agent that was running as usual; the next `loop.sh` call then answers `ACTION pause`.
 
 `.claude/scripts/loop.sh` is the state machine. It decides what happens next and prints it as the **last line**, starting with `ACTION`. You do what that line says — nothing else, nothing more.
 
@@ -17,6 +19,7 @@ Run `.claude/scripts/loop.sh start --session <your session id>`. Then act on its
 | `ACTION fix <ID> post-task <r/max>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. The post-task checks failed: run .claude/scripts/loop.sh findings <ID> and fix exactly those.` Then `log` as for implement. |
 | `ACTION stop …` | Run `.claude/scripts/loop.sh stop '<the whole ACTION line>'`, then report. |
 | `ACTION finish` | Run `.claude/scripts/loop.sh finish`, then report. |
+| `ACTION pause` | The user paused the build. Run `.claude/scripts/loop.sh status`, show it, and say `/resume` continues. Then you are no longer the orchestrator: do what the user asks. |
 
 Rules:
 - One agent per dispatch, always new; never resume an earlier one. Pass only the prompts above (plus findings in fix rounds) — the agents read everything else from the repo.
