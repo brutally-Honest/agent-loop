@@ -64,6 +64,11 @@ if [ "$class" = main ] && [ -n "$sid" ] && [ -d "$STATE_ROOT" ]; then
 		[ "$lsid" = "$sid" ] && locked=1
 	done
 fi
+paused_now=0
+for pf in "$STATE_ROOT"/*/paused; do [ -f "$pf" ] && grep -q '^mode=now' "$pf" && paused_now=1; done
+if [ $paused_now = 1 ] && kit; then
+	deny "agent-loop is paused (the user typed pause now). Stop here: make no more changes and end your turn with a final message whose first line is PAUSED, then one line on what is unfinished. Your uncommitted work stays in the tree."
+fi
 RUNMSG="this session is running an agent-loop build: it only dispatches agents and runs loop.sh. To work normally, interrupt with Esc (or type any message) — the run pauses; /resume continues it."
 
 secret() { # path -> 0 if it looks like a secret file
@@ -82,6 +87,12 @@ fi
 
 # ------------------------------------------------------------------------------ Agent
 if [ "$tool" = Agent ] || [ "$tool" = Task ]; then
+	if [ $paused_now = 1 ]; then
+		case $(jq -r '.tool_input.subagent_type // ""' <<<"$input") in
+			implementer | quick-builder | reviewer | planner | impact-analyst | spec-critic)
+				deny "agent-loop is paused (pause now): don't dispatch. Run .claude/scripts/loop.sh next — it answers ACTION pause." ;;
+		esac
+	fi
 	pass
 fi
 

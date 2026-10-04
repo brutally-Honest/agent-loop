@@ -18,6 +18,12 @@ cwd=$(jq -r '.cwd // ""' <<<"$input")
 r=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -n "${AGENT_LOOP_DEBUG:-}" ] && { mkdir -p "$r/.agent-loop" && printf '%s on-prompt %s\n' "$(date -u +%H:%M:%S)" "$input" >> "$r/.agent-loop/hook-debug.log"; }
 
+# not typed by the user: Claude Code delivers background-agent results and command output as
+# prompts too (no field says so, the text does) — they must not pause the build
+case $(printf '%s' "$prompt" | awk 'NF { sub(/^[[:space:]]+/, ""); print; exit }') in
+	"<task-notification>"* | "<local-command-"* | "<command-name>"* | "<command-message>"* | "<system-reminder>"* | "<bash-input>"* | "<bash-stdout>"* | "<bash-stderr>"*) exit 0 ;;
+esac
+
 # kit commands manage the run themselves
 first=$(printf '%s' "$prompt" | awk 'NF { print $1; exit }')
 first=${first##*:}

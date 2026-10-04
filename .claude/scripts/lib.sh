@@ -394,8 +394,8 @@ art_state() {
 	fi
 	rec=$(approval_rec "$sha" fingerprint "$k")
 	if [ -n "$rec" ]; then cur=$(contract_fp "$f")
-	else   # approved by v0.1: the whole body was hashed
-		rec=$(approval_rec "$sha" sha256); [ -n "$rec" ] || rec=$(fm_get "$f" sha256)
+	else   # approved before contract fingerprints (v0.1): the whole body was hashed into the frontmatter
+		rec=$(fm_get "$f" sha256)
 		cur=$(body_hash "$f")
 	fi
 	if [ "$rec" = "$cur" ]; then echo approved; else echo changed; fi
@@ -479,7 +479,7 @@ art_why() { # file state -> one or two plain lines: what is wrong, and what to t
 			echo "  do this: fix tasks.md (by hand or with /plan), then /implement" ;;
 		changed)
 			sha=$(approval_sha "$f" "$k")
-			if [ "$k" = tasks ] && [ "$(cfg AUTO_APPROVE_TASKS)" = on ]; then
+			if [ "$k" = tasks ] && [ "$(cfg AUTO_APPROVE_TASKS)" = on ] && [ -n "$(approval_rec "$sha" fingerprint tasks)" ]; then
 				echo "$(tasks_problems "$f" "$sha" | head -1). do this: git checkout $(git rev-parse --short "$sha") -- $f  (and add a new task for the rework)"
 			else
 				echo "$(contract_changes "$f" "$sha") since you approved $n. do this: /change --adopt  (turns your edit into a change request) — or undo it: git checkout $(git rev-parse --short "$sha") -- $f"

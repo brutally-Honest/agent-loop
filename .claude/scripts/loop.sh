@@ -249,6 +249,8 @@ cmd_status() {
 		for c in $(cr_files); do printf '  %-9s %s (scope %s)%s\n' "$(basename "$c" .md)" "$(art_state "$c")" "$(fm_get "$c" scope)" "$([ -n "$(fm_get "$c" applied)" ] && echo ", applied")"; done
 	fi
 	st=$(open_questions | tr '\n' ' '); [ -n "$st" ] && echo "  open questions: $st(research.md)"
+	if [ -f "$(sdir)/paused" ]; then echo "Build: paused ($(cut -d' ' -f1 "$(sdir)/paused" | sed 's/mode=//')) — /resume continues"
+	elif [ -f "$(sdir)/lock" ]; then echo "Build: running in session $(cut -d' ' -f1 "$(sdir)/lock") (type any message there to pause it)"; fi
 	if is_quick; then
 		[ -n "$(state_get Q)" ] && echo "Build: $(state_get Q)"
 	elif [ -f "$(art tasks)" ]; then
@@ -267,6 +269,7 @@ pending_crs() { local c; for c in $(cr_files); do [ "$(fm_get "$c" status)" = ap
 
 gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan is approved, only tasks.md is open
 	local e p t st tst mode=new
+	calm_pause
 	is_quick && die "$F is a /quick change: it has a brief, not a plan.
   do this: /approve brief (it builds right after), or /change to amend the brief"
 	e=$(chain_errors spec) || die "the planner can't start yet:
@@ -304,8 +307,12 @@ $(printf '%s\n' "$e" | sed 's/^/  /')"
   do this: git switch <the feature's branch>"
 	[ -n "$VERIFY_CMD" ] || die "$(verify_unset_msg)"
 	autocommit_research >/dev/null
-	tree_clean || die "the working tree has uncommitted changes: $(git status --short | head -5 | tr '\n' ' ')
+	if ! tree_clean; then
+		c=$(interrupted_task)
+		[ -n "$c" ] || die "the working tree has uncommitted changes: $(git status --short | head -5 | tr '\n' ' ')
   do this: commit or stash them, then /implement again"
+		echo "NOTE $c was interrupted and left uncommitted work — you'll be asked: continue, discard or keep it"
+	fi
 	echo "GATE implement: OK"
 	echo "FEATURE $F"
 	echo "KIND $(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)"
@@ -342,6 +349,7 @@ gate_change() { # [--adopt] [--reconcile] [spec|plan|tasks] <request> -> MODE ed
 		shift
 	done
 	if is_quick; then what=brief; else what=${what:-spec}; fi
+	calm_pause
 	merged && die "$F is already merged into $(base_branch), so it is history now.
   do this: /spec --supersedes ${F%%-*} <the change>   (a new feature that replaces it)"
 	f=$(art "$what")
@@ -447,7 +455,7 @@ pre_task() { # id -> 0 ok (base recorded) | 1 with STOP-REASON lines
 	fi
 	sfile_set "base.$id" "$(git rev-parse HEAD)"
 	sfile_set "rounds.$id" 0
-	rm -f "$(sdir)/findings.$id" "$(sdir)/watch.$id" "$(sdir)/reason.$id"
+	rm -f "$(sdir)/findings.$id" "$(sdir)/watch.$id" "$(sdir)/reason.$id" "$(sdir)/end.$id"
 	state_set "$id" IN-PROGRESS
 	[ "$id" = Q ] || state_set BRANCH CLEARED
 	log_event "$id pre-task ok base=$(short)"
@@ -458,11 +466,12 @@ PE=0
 pe() { printf '  - %s\n' "$*"; PE=1; }
 
 post_task() { # id [quick|full] -> 0 ok | 1 + problems.  quick = no verify (used by the SubagentStop hook)
-	local id=$1 mode=${2:-full} base commits c msg p tests changed kind w="" skips ce
+	local id=$1 mode=${2:-full} end base commits c msg p tests changed kind w="" skips ce
 	PE=0
 	base=$(sfile_get "base.$id"); [ -n "$base" ] || { pe "no base recorded for $id (pre-task never ran)"; return 1; }
+	end=$(task_end "$id")
 	tree_clean || pe "working tree not clean: $(git status --short | head -5 | tr '\n' ' ')"
-	commits=$(git rev-list "$base..HEAD")
+	commits=$(git rev-list "$base..$end")
 	[ -n "$commits" ] || pe "no new commit since $(short "$base")"
 	if [ "$(cfg TRAILERS)" != off ]; then
 		for c in $commits; do
@@ -482,14 +491,14 @@ post_task() { # id [quick|full] -> 0 ok | 1 + problems.  quick = no verify (used
 		match_globs "$p" "$WATCHED_GLOBS" && w="${w}WATCH changed $p — reviewer: is this needed, and does it weaken a check?
 "
 	done <<EOF
-$(git diff --name-only "$base" HEAD)
+$(git diff --name-only "$base" "$end")
 EOF
 	if is_quick; then tests=$(section "$(art brief)" "Steps" | grep 'Tests:' | grep -viE 'Tests:[[:space:]]*none')
 	else tests=$(task_field "$(art tasks)" "$id" Tests); case $tests in [Nn]one* | '') tests="" ;; esac; fi
 	if [ -n "$tests" ]; then
 		changed=""
 		while IFS= read -r p; do [ -n "$p" ] && match_globs "$p" "$TEST_GLOBS" && changed=1; done <<EOF
-$(git diff --name-only --diff-filter=AM "$base" HEAD)
+$(git diff --name-only --diff-filter=AM "$base" "$end")
 EOF
 		[ -n "$changed" ] || pe "the task names tests but no test file was added or changed (TEST_GLOBS in loop.conf)"
 	fi
@@ -497,7 +506,7 @@ EOF
 		[ -n "$p" ] && match_globs "$p" "$TEST_GLOBS" && w="${w}WATCH deleted test file $p — reviewer: must be justified by the spec
 "
 	done <<EOF
-$(git diff --name-only --diff-filter=D "$base" HEAD)
+$(git diff --name-only --diff-filter=D "$base" "$end")
 EOF
 	kind=$(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)
 	if [ "$kind" = refactor ]; then
@@ -505,10 +514,10 @@ EOF
 			[ -n "$p" ] && match_globs "$p" "$TEST_GLOBS" && w="${w}WATCH refactor modified existing test $p — behaviour must not change
 "
 		done <<EOF
-$(git diff --name-only --diff-filter=M "$base" HEAD)
+$(git diff --name-only --diff-filter=M "$base" "$end")
 EOF
 	fi
-	skips=$(git diff "$base" HEAD -U0 | grep '^+' | grep -v '^+++' \
+	skips=$(git diff "$base" "$end" -U0 | grep '^+' | grep -v '^+++' \
 		| grep -E 't\.Skip\(|\.skip\(|(^|[^A-Za-z_])x(it|describe|test)\(|\.only\(|@Disabled|pytest\.mark\.skip|(it|test)\.todo\(|//[[:space:]]*nolint|eslint-disable' | head -5)
 	[ -n "$skips" ] && w="${w}$(printf '%s\n' "$skips" | sed 's/^/WATCH added skip\/disable marker: /')
 "
@@ -580,7 +589,7 @@ risk_reason() { # id -> REVIEW=risk: reviewed if high risk, big, watched, or tou
 		echo "reviewed: the task says Risk: high"; return 0
 	fi
 	base=$(sfile_get "base.$id")
-	n=$(git diff --numstat "$base" HEAD 2>/dev/null | awk '{ n += $1 + $2 } END { print n + 0 }')
+	n=$(git diff --numstat "$base" "$(task_end "$id")" 2>/dev/null | awk '{ n += $1 + $2 } END { print n + 0 }')
 	max=$(cfg REVIEW_LINES)
 	[ "$n" -gt "$max" ] && { echo "reviewed: $n changed lines (REVIEW_LINES=$max)"; return 0; }
 	w=$(sfile_get "watch.$id" | awk 'NF { print; exit }')
@@ -590,7 +599,7 @@ risk_reason() { # id -> REVIEW=risk: reviewed if high risk, big, watched, or tou
 		while IFS= read -r p; do
 			[ -n "$p" ] && match_globs "$p" "$globs" && { echo "reviewed: touched $p (REVIEW_GLOBS)"; return 0; }
 		done <<EOF
-$(git diff --name-only "$base" HEAD 2>/dev/null)
+$(git diff --name-only "$base" "$(task_end "$id")" 2>/dev/null)
 EOF
 	fi
 	echo "skipped: low risk ($n changed lines, no watched files)"
@@ -676,7 +685,7 @@ cmd_config() { # [TASK]
 }
 
 cmd_start() {
-	local sid="" feat="" out flags=""
+	local sid="" feat="" out flags="" c
 	while [ $# -gt 0 ]; do
 		case $1 in
 			--session) sid=${2:-}; shift ;;
@@ -697,10 +706,10 @@ cmd_start() {
 	elif [ -f "$(sdir)/run.conf" ]; then echo "Using the flags of the interrupted run: $(tr '\n' ' ' < "$(sdir)/run.conf")"; fi
 	case $sid in '' | *'$'* | *CLAUDE_SESSION_ID*) warn "no session id — the orchestrator write-lock is off for this run"; sid="" ;; esac
 	ensure_state
-	rm -f "$(sdir)/paused"
+	[ -f "$(sdir)/paused" ] && { log_event "RESUME ($(cut -d' ' -f1 "$(sdir)/paused"))"; rm -f "$(sdir)/paused"; }
 	if [ -n "$sid" ]; then sfile_set lock "$sid $(now)"; fi
 	log_event "RUN START head=$(short) session=${sid:-none}"
-	if [ "$(cfg VERIFY)" = task ] && [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
+	if [ "$(cfg VERIFY)" = task ] && tree_clean && [ "$(sfile_get green)" != "$(git rev-parse HEAD)" ]; then
 		echo "Running verify on HEAD: $VERIFY_CMD"
 		if ! run_verify "before the first task"; then
 			tail -30 "$(VLOG)"
@@ -712,13 +721,25 @@ cmd_start() {
 		fi
 	fi
 	printf '%s\n' "$out" | grep -E '^(TASK|UNIT) '
+	if ! tree_clean; then
+		c=$(interrupted_task)
+		case $(state_detail "$c") in
+			"restored after "*) echo "$c continues from its restored attempt"; model_for "$c"; echo "ACTION implement $c model=$CV"; return 0 ;;
+		esac
+		echo "$c was interrupted and left uncommitted work:"; git status --short | head -10 | sed 's/^/  /'
+		echo "ACTION ask-dirty $c"
+		return 0
+	fi
 	echo "ACTION next"
 }
 
 cmd_next() {
 	local id st out
 	resolve_feature
-	if [ -f "$(sdir)/paused" ]; then release_lock; log_event "PAUSED at a task boundary"; echo "ACTION pause"; return 0; fi
+	if [ -f "$(sdir)/paused" ]; then
+		release_lock; calm_pause; log_event "PAUSED at a task boundary"
+		echo "Paused. /resume continues from here."; echo "ACTION pause"; return 0
+	fi
 	if is_quick; then
 		st=$(state_get Q)
 		case $st in
@@ -730,6 +751,11 @@ cmd_next() {
 	fi
 	for id in $(task_ids "$(art tasks)"); do
 		[ "$(state_get "$id")" = IMPLEMENTED ] && { echo "RESUME $id was implemented but not reviewed"; after_implemented "$id"; return 0; }
+		if [ "$(state_get "$id")" = IN-PROGRESS ] && interrupted_with_commits "$id"; then
+			echo "RESUME $id was interrupted after it committed — checking that work as if it had reported DONE"
+			log_event "$id resumed with commits from before the pause"
+			log_done "$id"; return 0
+		fi
 		if [ "$(state_get "$id")" = ESCALATED ]; then
 			state_set "$id" IMPLEMENTED "re-review after your decision"
 			echo "RESUME $id was escalated — reviewing it again against the spec as it is now"
@@ -755,6 +781,10 @@ cmd_log() {
 	[ -n "$id" ] && [ -n "$agent" ] || die "usage: log <ID> <agent> '<first line of its final message>'"
 	set -f; set -- $line; set +f
 	verdict=${1:-}; w2=${2:-}; w3=${3:-}
+	if pause_mode now; then
+		log_event "$id $agent stopped by pause now: '$line'"; release_lock; calm_pause
+		echo "Paused now: $id is left as it was; /resume decides what happens to its work."; echo "ACTION pause"; return 0
+	fi
 	case $agent in
 		implementer | quick-builder)
 			[ "$id" != BRANCH ] || die "BRANCH is reviewed, not implemented"
@@ -766,18 +796,7 @@ cmd_log() {
 					echo "ACTION stop contract $id ($id is not in progress — run loop.sh next to get the current action)"; return 0 ;;
 			esac
 			case $verdict in
-				DONE)
-					log_event "$id $agent DONE $(short)"
-					if out=$(post_task "$id" full); then
-						state_set "$id" IMPLEMENTED "$(short)"
-						[ -n "$out" ] && printf '%s\n' "$out"
-						after_implemented "$id"
-					else
-						sfile_set "findings.$id" "$out"
-						echo "post-task checks failed for $id:"; printf '%s\n' "$out"
-						log_event "$id post-task FAILED"
-						bump "$id" post-task
-					fi ;;
+				DONE) log_event "$id $agent DONE $(short)"; log_done "$id" ;;
 				BLOCKED)
 					q=$(printf '%s' "$w3" | grep -oE '^Q[0-9]+'); q=${q:-Q?}
 					state_set "$id" BLOCKED "$q"; log_event "$id $agent BLOCKED $q"
@@ -817,6 +836,66 @@ release_lock() { rm -f "$(sdir)/lock"; }
 
 cmd_stop() { resolve_feature; log_event "STOP $*"; release_lock; cmd_report; }
 cmd_finish() { resolve_feature; log_event "RUN END"; release_lock; cmd_report; rm -f "$(sdir)/run.conf"; }
+log_done() { # id -> the script's checks on a reported (or resumed) DONE, then review or a fix round
+	local id=$1 out
+	if out=$(post_task "$id" full); then
+		state_set "$id" IMPLEMENTED "$(short)"
+		[ -n "$out" ] && printf '%s\n' "$out"
+		after_implemented "$id"
+	else
+		sfile_set "findings.$id" "$out"
+		echo "post-task checks failed for $id:"; printf '%s\n' "$out"
+		log_event "$id post-task FAILED"
+		bump "$id" post-task
+	fi
+}
+
+pause_mode() { [ -f "$(sdir)/paused" ] && grep -q "^mode=$1" "$(sdir)/paused"; }   # graceful | now
+calm_pause() { pause_mode now && sfile_set paused "mode=graceful $(now) (was now)"; return 0; }   # agents are back: stop denying them
+
+interrupted_task() { # the task a pause or Esc left IN-PROGRESS (Q for quick), if any
+	local id
+	if is_quick; then [ "$(state_get Q)" = IN-PROGRESS ] && echo Q; return 0; fi
+	for id in $(task_ids "$(art tasks)"); do [ "$(state_get "$id")" = IN-PROGRESS ] && { echo "$id"; return 0; }; done
+	return 0
+}
+task_end() { local e; e=$(sfile_get "end.$1"); printf '%s\n' "${e:-HEAD}"; }   # where a task's commits end
+
+interrupted_with_commits() { # id -> 0 when the interrupted task committed before the pause; its range then ends there
+	local b e
+	b=$(sfile_get "base.$1"); [ -n "$b" ] && tree_clean || return 1
+	# your commits made while paused are yours, not the task's: the task's range ends where the pause found HEAD
+	e=$(sfile_get pausehead)
+	{ [ -n "$e" ] && git merge-base --is-ancestor "$b" "$e" 2>/dev/null; } || e=$(git rev-parse HEAD)
+	[ -n "$(git rev-list "$b..$e" 2>/dev/null)" ] || return 1
+	[ "$e" = "$(git rev-parse HEAD)" ] || sfile_set "end.$1" "$e"
+	return 0
+}
+
+cmd_dirty() { # <ID> continue|discard|keep — what happens to the uncommitted work an interrupted task left behind
+	local id=${1:-} how=${2:-}
+	resolve_feature
+	[ "$(state_get "$id")" = IN-PROGRESS ] || die "${id:-the task} was not interrupted."
+	case $how in
+		continue)
+			log_event "$id continues from its uncommitted work"
+			echo "$id continues: the implementer finishes the diff in the working tree"
+			model_for "$id"; echo "ACTION implement $id model=$CV" ;;
+		discard)
+			git stash push -q -u -m "$id discarded on resume" || die "stashing the work failed"
+			log_event "$id: uncommitted work discarded on resume (git stash: '$id discarded on resume')"
+			echo "Stashed as '$id discarded on resume' (git stash list) — $id starts over"
+			cmd_next ;;
+		keep)
+			log_event "$id: the user keeps its uncommitted work as their own change"
+			release_lock
+			echo "The work stays in the tree as your change. Commit it (or not) yourself; then /resume runs $id again from the new HEAD."
+			echo "ACTION stop keep $id" ;;
+		*) die "say what to do with $id's uncommitted work.
+  do this: loop.sh dirty $id continue|discard|keep" ;;
+	esac
+}
+
 cmd_pause() { # [--now] [--session ID] [feature] — the run stops at the next task boundary (--now: agents are stopped too)
 	local mode=graceful sid="" feat="" l lsid fs=""
 	while [ $# -gt 0 ]; do
@@ -835,6 +914,7 @@ cmd_pause() { # [--now] [--session ID] [feature] — the run stops at the next t
 	fi
 	for F in $fs; do
 		sfile_set paused "mode=$mode $(now)"
+		sfile_set pausehead "$(git rev-parse HEAD)"
 		release_lock
 		log_event "PAUSE requested ($mode)"
 		echo "PAUSED $F ($mode) — /resume continues the build"
@@ -940,9 +1020,9 @@ cmd_review_info() {
 				echo "MODE task — the standard is $(art spec) plus AGENTS.md/CLAUDE.md. The block below is the CLAIM you check, not the standard:"
 				task_block "$(art tasks)" "$id"
 			fi
-			echo "RANGE $(short "$base")..$(short)   (git diff $(short "$base")..HEAD)"
+			echo "RANGE $(short "$base")..$(short "$(task_end "$id")")   (git diff $(short "$base")..$(short "$(task_end "$id")"))"
 			echo "ROUND $(sfile_get "rounds.$id")/$(cfg FIX_ROUNDS)"
-			git diff --stat "$base" HEAD | tail -25
+			git diff --stat "$base" "$(task_end "$id")" | tail -25
 			sfile_get "watch.$id"
 			verify_line
 			;;
@@ -1229,6 +1309,7 @@ case $cmd in
 	finish) cmd_finish "$@" ;;
 	unlock) cmd_unlock "$@" ;;
 	pause) cmd_pause "$@" ;;
+	dirty) cmd_dirty "$@" ;;
 	task) cmd_task "$@" ;;
 	findings) cmd_findings "$@" ;;
 	post-check) cmd_post_check "$@" ;;

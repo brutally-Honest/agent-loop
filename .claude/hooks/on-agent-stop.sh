@@ -34,6 +34,8 @@ F=$( (resolve_feature && printf '%s' "$F") 2>/dev/null ) || F=""
 [ -n "$F" ] || exit 0   # used outside a feature branch: no contract to enforce
 
 first=$(printf '%s\n' "$msg" | awk 'NF { print; exit }' | sed -E 's/^[[:space:]>#*`_]+//; s/[*`_[:space:]]+$//')
+# "pause now": the agent was told to stop mid-task; its report is not held to the contract
+if [ -f "$STATE_ROOT/$F/paused" ] && grep -q '^mode=now' "$STATE_ROOT/$F/paused"; then exit 0; fi
 rdir="$STATE_ROOT/$F/hook-retries"; mkdir -p "$rdir"
 rfile="$rdir/$aid"
 n=$(cat "$rfile" 2>/dev/null || echo 0)

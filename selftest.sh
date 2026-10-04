@@ -199,6 +199,8 @@ eq "kit agent still constrained during a run" "$(ge implementer $D/spec.md a b s
 prompt() { printf '{"session_id":"%s","cwd":"%s","prompt":%s}' "$1" "$T" "$(jq -Rn --arg p "$2" '$p')" | .claude/hooks/on-prompt.sh; }
 eq "a kit command doesn't pause the run" "$(prompt s1 '/status')" ""
 eq "another session's prompt doesn't pause it" "$(prompt s9 'hello')" ""
+eq "a background agent's notification doesn't pause it" "$(prompt s1 '<task-notification>
+<task-id>a1</task-id><status>completed</status></task-notification>')" ""
 has "a plain prompt pauses the run" "$(prompt s1 'actually, rename sub to minus')" "build was paused"
 bad test -f .agent-loop/$F/lock
 eq "after the auto-pause the main session edits code" "$(gw main src/calc.sh x s1)" none
@@ -545,10 +547,51 @@ has "accept as is → PASS and continue" "$($L accept T001 the spec is fine as i
 has "the accepted risk is on record" "$($L report)" "accepted by you: the spec is fine as is"
 has "and in the run log" "$(cat .agent-loop/$FF/run.log)" "ACCEPTED by the user"
 
+echo "== pause and resume"
+mkfeat pauses 4 || exit 1
+$L start --session s12 >/dev/null
+has "T001 starts" "$($L next)" "ACTION implement T001"
+has "graceful pause from a terminal" "$($L pause)" "PAUSED $FF (graceful)"
+bad test -f .agent-loop/$FF/lock
+has "status shows it" "$($L status)" "Build: paused (graceful)"
+impl T001
+has "the current task still completes" "$($L log T001 implementer "DONE T001 x")" "ACTION next"
+has "then the loop pauses" "$($L next)" "ACTION pause"
+has "/resume continues at the following task" "$($L start --session s13; $L next)" "ACTION implement T002"
+has "pause now" "$($L pause --now)" "(now)"
+eq "pause now: a kit agent's next tool call is denied" "$(gb implementer "ls")" deny
+has "…with the reason" "$(printf '{"agent_type":"implementer","tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"%s","session_id":"s13"}' "$T" | $G)" "agent-loop is paused"
+eq "pause now: no new kit dispatch" "$(guard main Agent '{"subagent_type":"reviewer","prompt":"x"}' s13)" deny
+eq "pause now: other agents still run" "$(guard main Agent '{"subagent_type":"Explore","prompt":"x"}' s13)" none
+echo "half done" > "src/$FN-T002.sh"
+out=$(stop implementer pn1 "I was paused before finishing"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL a paused agent is let go: $out"; }
+has "its report is not a verdict" "$($L log T002 implementer "I was paused before finishing")" "ACTION pause"
+eq "once the orchestrator is back, agents aren't denied any more" "$(gb implementer "ls")" none
+ok $L gate implement
+has "resume asks about the leftover work" "$($L start --session s14)" "ACTION ask-dirty T002"
+has "keep: it stays yours, the run stops" "$($L dirty T002 keep)" "ACTION stop keep T002"
+test -f "src/$FN-T002.sh" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL keep left the work"; }
+has "continue: an implementer finishes the diff" "$($L start --session s14 >/dev/null; $L dirty T002 continue)" "ACTION implement T002"
+has "discard: stashed, the task starts over" "$($L dirty T002 discard)" "ACTION implement T002"
+has "…as a named stash" "$(git stash list)" "T002 discarded on resume"
+bad test -f "src/$FN-T002.sh"
+impl T002; $L pause >/dev/null
+printf '# my note\n' >> .claude/loop.conf; git commit -qam "chore: my own commit while paused"
+out=$($L start --session s15 >/dev/null; $L next)
+has "resume after an interrupted task had committed: checked as DONE" "$out" "RESUME T002 was interrupted after it committed"
+has "…and my commit made while paused isn't held against it" "$out" "ACTION next"
+has "and the run goes on" "$($L next)" "ACTION implement T003"
+
 echo "== plain language"
 for w in fingerprint chain_errors art_state; do
 	eq "no '$w' in user-facing messages" "$(grep -nE "(die|echo|err|pe|wrn|warn|block|deny) \"[^\"]*$w" .claude/scripts/*.sh .claude/hooks/*.sh | grep -c .)" 0
 done
+
+echo "== approvals stamped before contract fingerprints still count"
+mkfeat legacy 1 || exit 1
+git commit -q --amend -m "docs($FF): approve plan v1 + tasks v1" -m "sha256 $(fm_sha=$(awk '/^sha256:/ { print $2; exit }' $DD/plan.md); echo $fm_sha)"
+out=$($L status); has "old plan approval" "$out" "plan.md   approved v1"; has "old tasks approval" "$out" "tasks.md  approved v1"
+ok $L gate implement
 
 echo "== profiles"
 git checkout -q main
