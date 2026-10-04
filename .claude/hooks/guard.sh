@@ -69,7 +69,7 @@ for pf in "$STATE_ROOT"/*/paused; do [ -f "$pf" ] && grep -q '^mode=now' "$pf" &
 if [ $paused_now = 1 ] && kit; then
 	deny "agent-loop is paused (the user typed pause now). Stop here: make no more changes and end your turn with a final message whose first line is PAUSED, then one line on what is unfinished. Your uncommitted work stays in the tree."
 fi
-RUNMSG="this session is running an agent-loop build: it only dispatches agents and runs loop.sh. To work normally, interrupt with Esc (or type any message) — the run pauses; /resume continues it."
+RUNMSG="this session is running an agent-loop build: it only dispatches agents and runs loop.sh. To work normally, interrupt with Esc (or type any message) — the run pauses; /al-resume continues it."
 
 secret() { # path -> 0 if it looks like a secret file
 	local b=${1##*/}
@@ -108,9 +108,9 @@ if [ "$tool" = Bash ]; then
 	single() { ! printf '%s' "$clean" | grep -Eq '[;&|<>`]|\$\(' && [ "$(printf '%s' "$cmd" | wc -l | tr -d ' ')" = 0 ]; }
 	loopsh() { has '^\.claude/scripts/loop\.sh( |$)'; }
 
-	has 'approve\.sh' && deny "approve.sh is human-only — the user types /approve (or runs it in a terminal)."
+	has 'approve\.sh' && deny "approve.sh is human-only — the user types /al-approve (or runs it in a terminal)."
 	has '(^|[^[:alnum:]_-])git[[:space:]].*commit.*(: approve |: auto-approve )' \
-		&& deny "approval commits are made by approve.sh only — the user types /approve."
+		&& deny "approval commits are made by approve.sh only — the user types /al-approve."
 
 	GIT_WRITE='push|reset|rebase|checkout|switch|merge|tag|worktree|config|update-ref|filter-branch|filter-repo|clean|cherry-pick|revert|remote|fetch|pull|gc|prune|replace|reflog|submodule|am|apply|notes'
 
@@ -232,7 +232,7 @@ check_file() { # rel path
 	case $rel in
 	"$SPECS_DIR"/*/*.md | "$SPECS_DIR"/*/changes/*.md)
 		sets_approval "$REPO/$rel" \
-			&& deny "only the user approves: leave status: approved and the approval stamps under it as they are. The user types /approve."
+			&& deny "only the user approves: leave status: approved and the approval stamps under it as they are. The user types /al-approve."
 		;;
 	esac
 
@@ -262,21 +262,21 @@ check_file() { # rel path
 			spec.md | plan.md | tasks.md | brief.md | changes/CR-*.md)
 				if [ -f "$f" ]; then
 					st=$(fm_get "$f" status)
-					[ "$st" = approved ] && deny "$rel is approved. Agents don't change approved files; the user changes them (/change)."
+					[ "$st" = approved ] && deny "$rel is approved. Agents don't change approved files; the user changes them (/al-change)."
 				fi ;;
 		esac
 		case $class in reader) deny "$role is read-only." ;; esac
 		case $name in
 			research.md) return 0 ;;
-			spec.md | brief.md) deny "only the main session writes $name (with the user, via /spec or /quick)." ;;
+			spec.md | brief.md) deny "only the main session writes $name (with the user, via /al-spec or /al-quick)." ;;
 			plan.md)
 				case $role in
-					planner) chain_errors spec >/dev/null || deny "spec.md of $F is not approved — the planner stops here. The user must /approve spec first." ;;
+					planner) chain_errors spec >/dev/null || deny "spec.md of $F is not approved — the planner stops here. The user must /al-approve spec first." ;;
 					*) deny "only the planner writes plan.md." ;;
 				esac ;;
 			tasks.md)
 				case $role in
-					planner) chain_errors spec >/dev/null || deny "spec.md of $F is not approved — the planner stops here. The user must /approve spec first." ;;
+					planner) chain_errors spec >/dev/null || deny "spec.md of $F is not approved — the planner stops here. The user must /al-approve spec first." ;;
 					*) deny "only the planner writes tasks.md." ;;
 				esac ;;
 			changes/CR-*.md) [ "$role" = impact-analyst ] || deny "only the impact-analyst writes change requests." ;;

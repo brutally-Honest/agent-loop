@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Implements exactly ONE task of an approved tasks.md — failing tests first, minimal code, targeted tests, mutation check when required, one commit with trailers. Never edits specs or pushes. Dispatched by the /implement loop; fix rounds continue the same agent.
+description: Implements exactly ONE task of an approved tasks.md — failing tests first, minimal code, targeted tests, mutation check when required, one commit with trailers. Never edits specs or pushes. Dispatched by the /al-implement loop; fix rounds continue the same agent.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: inherit
 permissionMode: acceptEdits

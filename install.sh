@@ -27,6 +27,13 @@ backup() {
 
 echo "Installing agent-loop into $repo"
 for f in .claude/commands/run-feature.md .claude/hooks/agent-bash-guard.sh; do backup "$f"; done
+# kit skills from before the al- prefix (v0.1 and early v0.2). Only the kit's own: a skill of yours
+# with the same name (no "allowed-tools: Bash(.claude/scripts/loop.sh *)" line) is left alone.
+for s in spec plan plan-feature approve implement amend change fix quick pause resume status answer; do
+	d=".claude/skills/$s"
+	[ -f "$d/SKILL.md" ] || continue
+	if grep -qx "name: $s" "$d/SKILL.md" && grep -qF 'Bash(.claude/scripts/loop.sh *)' "$d/SKILL.md"; then backup "$d"; fi
+done
 for f in $(cd "$KIT" && find .claude/agents .claude/skills .claude/hooks .claude/scripts .claude/templates -type f); do
 	if [ -e "$f" ] && ! cmp -s "$KIT/$f" "$f"; then backup "$f"; fi
 done
@@ -95,11 +102,11 @@ cat <<EOF
 
 Done. Next:
   1. $vline
-     (TEST_CMD is optional.) /implement refuses to start while VERIFY_CMD is empty.
+     (TEST_CMD is optional.) /al-implement refuses to start while VERIFY_CMD is empty.
   2. Pick a profile in .claude/loop.conf: PROFILE="balanced" (default), "fast" or "strict".
      Every other knob is commented there; .claude/scripts/loop.sh config shows what applies.
   3. Commit the kit:   git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
   4. Check the setup:  .claude/scripts/loop.sh doctor
   5. Start Claude Code from the repo root and accept the workspace-trust prompt (hooks need it).
-  6. /spec <what you want>  or  /quick <small change>  — /status shows where you are at any time.
+  6. /al-spec <what you want>  or  /al-quick <small change>  — /al-status shows where you are at any time.
 EOF

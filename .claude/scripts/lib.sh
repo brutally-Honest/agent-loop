@@ -46,7 +46,7 @@ al_init() {
 # came from: run | task | feature | repo | profile:<name> | default) without a subshell.
 #   run      .agent-loop/<f>/run.conf, KEY=value lines written by `loop.sh start` from flags
 #   task     the task block's Model: / Review: / Verify: fields (see model_for, task_review)
-#   feature  plan.md frontmatter (brief.md for /quick), keys in lower-kebab case: review:, fix-rounds:
+#   feature  plan.md frontmatter (brief.md for /al-quick), keys in lower-kebab case: review:, fix-rounds:
 #   repo     .claude/loop.conf
 CFG_KEYS="PROFILE REVIEW VERIFY FIX_ROUNDS MUTATION CRITIC MODEL_PLANNER MODEL_IMPLEMENTER MODEL_REVIEWER MODEL_BRANCH_REVIEWER MODEL_QUICK MODEL_IMPACT SIZE_MODELS AUTO_APPROVE_TASKS TRAILERS REVIEW_LINES REVIEW_GLOBS PLAN_MAX_LINES BATCH_SMALL"
 
@@ -307,7 +307,7 @@ resolve_feature() { # [id | NNN] -> sets F, or dies
 		done
 	done
 	die "branch '$br' has no feature.
-  do this: /spec --here <requirement>  (or /quick --here …) to start one on this branch, or git switch to the feature's branch"
+  do this: /al-spec --here <requirement>  (or /al-quick --here …) to start one on this branch, or git switch to the feature's branch"
 }
 
 art() { printf '%s/%s/%s.md' "$SPECS_DIR" "$F" "$1"; }   # spec|plan|tasks|brief|research
@@ -458,33 +458,33 @@ art_why() { # file state -> one or two plain lines: what is wrong, and what to t
 		approved) return 0 ;;
 		missing)
 			case $k in
-				spec) echo "there is no spec yet. do this: /spec <requirement>" ;;
-				plan) echo "there is no plan yet. do this: /plan" ;;
-				tasks) echo "there is no tasks.md yet. do this: /plan (the planner writes it)" ;;
+				spec) echo "there is no spec yet. do this: /al-spec <requirement>" ;;
+				plan) echo "there is no plan yet. do this: /al-plan" ;;
+				tasks) echo "there is no tasks.md yet. do this: /al-plan (the planner writes it)" ;;
 				*) echo "$n does not exist" ;;
 			esac ;;
 		draft)
 			case $k in
-				plan) echo "plan.md is a draft. do this: review it, then /approve plan (or /plan to revise it)" ;;
-				tasks) echo "tasks.md is a draft. do this: fix what '.claude/scripts/loop.sh check tasks' lists (by hand or with /plan), then /approve tasks" ;;
-				spec) echo "spec.md is a draft. do this: review it, then /approve spec, then /plan" ;;
-				brief) echo "brief.md is a draft. do this: review it, then /approve brief (the build starts right after)" ;;
-				*) echo "$n is a draft. do this: review it, then /approve $k" ;;
+				plan) echo "plan.md is a draft. do this: review it, then /al-approve plan (or /al-plan to revise it)" ;;
+				tasks) echo "tasks.md is a draft. do this: fix what '.claude/scripts/loop.sh check tasks' lists (by hand or with /al-plan), then /al-approve tasks" ;;
+				spec) echo "spec.md is a draft. do this: review it, then /al-approve spec, then /al-plan" ;;
+				brief) echo "brief.md is a draft. do this: review it, then /al-approve brief (the build starts right after)" ;;
+				*) echo "$n is a draft. do this: review it, then /al-approve $k" ;;
 			esac ;;
-		unproven) echo "$n says approved, but no approval of yours records it. do this: /approve $k" ;;
+		unproven) echo "$n says approved, but no approval of yours records it. do this: /al-approve $k" ;;
 		invalid)
 			sha=$(approval_sha "$f" "$k")
 			echo "tasks.md was edited and no longer passes the checks:"
 			tasks_problems "$f" "$sha" | sed 's/^/  /'
-			echo "  do this: fix tasks.md (by hand or with /plan), then /implement" ;;
+			echo "  do this: fix tasks.md (by hand or with /al-plan), then /al-implement" ;;
 		changed)
 			sha=$(approval_sha "$f" "$k")
 			if [ "$k" = tasks ] && [ "$(cfg AUTO_APPROVE_TASKS)" = on ] && [ -n "$(approval_rec "$sha" fingerprint tasks)" ]; then
 				echo "$(tasks_problems "$f" "$sha" | head -1). do this: git checkout $(git rev-parse --short "$sha") -- $f  (and add a new task for the rework)"
 			else
-				echo "$(contract_changes "$f" "$sha") since you approved $n. do this: /change --adopt  (turns your edit into a change request) — or undo it: git checkout $(git rev-parse --short "$sha") -- $f"
+				echo "$(contract_changes "$f" "$sha") since you approved $n. do this: /al-change --adopt  (turns your edit into a change request) — or undo it: git checkout $(git rev-parse --short "$sha") -- $f"
 			fi ;;
-		*) echo "$n has status '$st'. do this: /approve $k" ;;
+		*) echo "$n has status '$st'. do this: /al-approve $k" ;;
 	esac
 }
 
@@ -500,7 +500,7 @@ chain_errors() { # up-to: spec|plan|tasks|brief -> prints what's in the way (pla
 	p=$(art plan); st=$(art_state "$p")
 	if [ "$st" != approved ]; then art_why "$p" "$st"; e=1
 	elif [ $e = 0 ] && [ "$(link_rec "$p" spec-fingerprint)" != "$(contract_fp "$s")" ]; then
-		echo "plan.md was approved for an earlier version of the spec. do this: /plan to revise it, then /approve plan"; e=1
+		echo "plan.md was approved for an earlier version of the spec. do this: /al-plan to revise it, then /al-approve plan"; e=1
 	fi
 	[ "$1" = plan ] && return $e
 	t=$(art tasks); st=$(art_state "$t")
@@ -508,10 +508,10 @@ chain_errors() { # up-to: spec|plan|tasks|brief -> prints what's in the way (pla
 	elif [ $e = 0 ]; then
 		if [ -n "$(link_rec "$t" plan-fingerprint)" ]; then
 			[ "$(link_rec "$t" plan-fingerprint)" = "$(contract_fp "$p")" ] \
-				|| { echo "tasks.md was approved for an earlier version of the plan. do this: /plan to revise it, then /approve tasks"; e=1; }
+				|| { echo "tasks.md was approved for an earlier version of the plan. do this: /al-plan to revise it, then /al-approve tasks"; e=1; }
 		else   # v0.1: tasks recorded the plan's whole-body hash
 			[ "$(fm_get "$t" plan-sha256)" = "$(fm_get "$p" sha256)" ] \
-				|| { echo "tasks.md was approved for an earlier version of the plan. do this: /plan to revise it, then /approve tasks"; e=1; }
+				|| { echo "tasks.md was approved for an earlier version of the plan. do this: /al-plan to revise it, then /al-approve tasks"; e=1; }
 		fi
 	fi
 	return $e

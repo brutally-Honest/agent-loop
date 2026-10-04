@@ -60,7 +60,7 @@ set_section() { # file heading text  (puts text right under "## heading")
 
 echo "== doctor"; ok $L doctor
 
-echo "== /spec: new feature, draft spec, gates"
+echo "== /al-spec: new feature, draft spec, gates"
 out=$($L new feat subtract); has new "$out" "BRANCH feat/001-subtract"
 F=001-subtract D=specs/$F
 bad $L gate plan
@@ -112,6 +112,9 @@ EOF
 
 echo "== opt-in enforcement: free outside a run, kit agents always constrained"
 eq() { [ "$2" = "$3" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL $1: got $2, expected $3"; }; }
+eq "no kit skill without the al- prefix" "$(ls "$KIT/.claude/skills" | grep -vc '^al-')" 0
+eq "each skill's name is its dir" "$(for d in "$KIT"/.claude/skills/*/; do n=$(basename "$d"); grep -qx "name: $n" "$d/SKILL.md" || echo "$n"; done)" ""
+
 eq "main edits the kit outside a run" "$(ge main .claude/scripts/loop.sh 'set -uo pipefail' 'set -euo pipefail')" none
 eq "main edits loop.conf outside a run" "$(gw main .claude/loop.conf 'VERIFY_CMD=x')" none
 eq "main edits an approved spec's body" "$(ge main $D/spec.md 'Users can add but not subtract.' 'Users can add, not subtract.')" none
@@ -132,7 +135,7 @@ eq "reviewer may not cat a key" "$(gb reviewer "cat deploy/server.key")" deny
 eq "main may read .env (its own permission rules apply)" "$(gr main .env)" none
 eq "main runs git freely outside a run" "$(gb main "git commit -am wip")" none
 
-echo "== /plan: the planner writes plan.md and tasks.md; /approve plan approves both"
+echo "== /al-plan: the planner writes plan.md and tasks.md; /al-approve plan approves both"
 ok $L gate plan
 stop planner p1 "PLAN-DRAFTED 0 0" | grep -q '"block"' && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL planner contract should block an empty plan"; }
 fill $D/plan.md <<'PY'
@@ -178,7 +181,7 @@ out=$($A plan); has "plan approval stamps tasks too" "$out" "APPROVED tasks v1"
 has "one commit for both" "$(git log -1 --format=%s)" "approve plan v1 + tasks v1"
 has "tasks approved" "$($L status)" "tasks.md  approved v1"
 
-echo "== /implement loop"
+echo "== /al-implement loop"
 cp .claude/loop.conf "$X/conf.bak"
 sed 's/^VERIFY_CMD=.*/VERIFY_CMD=""/' "$X/conf.bak" > .claude/loop.conf
 bad $L gate implement
@@ -197,10 +200,14 @@ eq "another session is not the orchestrator" "$(gw main src/calc.sh x s9)" none
 eq "a non-kit agent is free during a run" "$(gw Explore src/calc.sh x s1)" none
 eq "kit agent still constrained during a run" "$(ge implementer $D/spec.md a b s1)" deny
 prompt() { printf '{"session_id":"%s","cwd":"%s","prompt":%s}' "$1" "$T" "$(jq -Rn --arg p "$2" '$p')" | .claude/hooks/on-prompt.sh; }
-eq "a kit command doesn't pause the run" "$(prompt s1 '/status')" ""
+eq "a kit command doesn't pause the run" "$(prompt s1 '/al-status')" ""
+eq "no /al-* command pauses it" "$(prompt s1 '/al-implement --review none')" ""
+eq "a hook for an unprefixed name ignores it" "$(printf '{"command_name":"status","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)" ""
 eq "another session's prompt doesn't pause it" "$(prompt s9 'hello')" ""
 eq "a background agent's notification doesn't pause it" "$(prompt s1 '<task-notification>
-<task-id>a1</task-id><status>completed</status></task-notification>')" ""
+<task-id>a1</task-id><status>completed</al-status></task-notification>')" ""
+has "an unprefixed /status is a plain prompt: it pauses the run" "$(prompt s1 '/status')" "build was paused"
+$L start --session s1 >/dev/null
 has "a plain prompt pauses the run" "$(prompt s1 'actually, rename sub to minus')" "build was paused"
 bad test -f .agent-loop/$F/lock
 eq "after the auto-pause the main session edits code" "$(gw main src/calc.sh x s1)" none
@@ -242,14 +249,14 @@ awk '{ sub(/the system shall print the negative number/, "the system shall print
 git commit -qam "docs: reword AC2"
 out=$($L gate implement 2>&1)
 has "an AC edit stops the build, naming the AC" "$out" "AC2 changed since you approved spec.md"
-has "…and offers /change --adopt" "$out" "/change --adopt"
+has "…and offers /al-change --adopt" "$out" "/al-change --adopt"
 has "…or the exact undo" "$out" "git checkout [0-9a-f]* -- $D/spec.md"
 bad $L gate implement
 printf -- '---\nstatus: approved\n---\n' > /dev/null
 git reset -q --hard HEAD~3
 ok $L gate implement
 
-echo "== /amend: change request → reopen → cascade → done tasks frozen → verify red → fix limit"
+echo "== /al-change: change request → reopen → cascade → done tasks frozen → verify red → fix limit"
 ok $L gate amend
 has cr-new "$($L cr-new)" "CR CR-001"
 C=$D/changes/CR-001.md
@@ -309,7 +316,7 @@ $L log T003 implementer "DONE T003 x" >/dev/null
 has "fix limit" "$($L log T003 implementer "DONE T003 x")" "ACTION stop fix-limit T003"
 $L stop "fix-limit" >/dev/null
 
-echo "== /quick + /approve hook"
+echo "== /al-quick + /al-approve hook"
 git checkout -q main
 has quick "$($L new fix tiny --quick)" "BRANCH fix/002-tiny"
 Q=specs/002-tiny/brief.md
@@ -318,12 +325,12 @@ set_section $Q Acceptance "- **AC1** — When sub 0 0 runs, the system shall pri
 set_section $Q "Out of scope" "- floats"
 set_section $Q Approach "tests only"
 set_section $Q Steps "- **S1** — add test — Tests: zero_test"
-out=$(printf '{"command_name":"approve","command_args":"brief","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
+out=$(printf '{"command_name":"al-approve","command_args":"brief","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
 has "approve hook" "$out" "APPROVED brief v1"
-out=$(printf '{"command_name":"approve","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
+out=$(printf '{"command_name":"al-approve","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
 has "approve hook refuses" "$out" '"block"'
-out=$(printf '{"command_name":"plan-feature","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
-has "gate hook blocks /plan-feature on a quick feature" "$out" '"block"'
+out=$(printf '{"command_name":"al-plan","command_args":"","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)
+has "gate hook blocks /al-plan on a quick feature" "$out" '"block"'
 has "quick next" "$($L start --session s2 >/dev/null; $L next)" "ACTION implement Q"
 printf 'echo z\n' > tests/zero_test.sh; printf 'test: zero\n\nTask: Q\nFeature: 002-tiny\n' > .agent-loop/commit-msg
 git add tests/zero_test.sh && git commit -qF .agent-loop/commit-msg
@@ -383,7 +390,7 @@ has "bogus flag refused" "$($L start --session s3 --review bogus 2>&1)" "use one
 has "bogus model refused" "$($L start --session s3 --model T002=gpt 2>&1)" "haiku sonnet opus"
 has "unknown flag refused" "$($L start --session s3 --turbo 2>&1)" "unknown flag"
 bad test -f .agent-loop/$FF/lock
-has "/implement hook refuses bad flags" "$(printf '{"command_name":"implement","command_args":"--review bogus","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)" '"block"'
+has "/al-implement hook refuses bad flags" "$(printf '{"command_name":"al-implement","command_args":"--review bogus","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)" '"block"'
 has "start with run flags" "$($L start --session s3 --model T002=opus)" "ACTION next"
 has "run layer" "$($L config T002)" "MODEL=opus (run)"
 has "ACTION carries the model" "$($L next)" "ACTION implement T001 model=sonnet"
@@ -475,26 +482,26 @@ $L next >/dev/null; notr T002; $L log T002 implementer "DONE T002 x" >/dev/null
 $L next >/dev/null; $L log BRANCH reviewer PASS >/dev/null; $L finish >/dev/null
 has "impact finds commits without trailers" "$($L impact AC1)" "commit .* feat(x): T001 without trailers"
 
-echo "== /change, /fix, /answer, /status, inline BLOCKED and ESCALATE"
+echo "== /al-change, /al-fix, /al-answer, /al-status, inline BLOCKED and ESCALATE"
 cmdhook() { printf '{"command_name":"%s","command_args":%s,"cwd":"%s","session_id":"%s"}' "$1" "$(jq -Rn --arg a "$2" '$a')" "$T" "${3:-s0}" | .claude/hooks/on-command.sh; }
 mkfeat early 2 || exit 1
-has "/status runs in the hook" "$(cmdhook status '')" "show it to the user exactly"
-has "/status --config adds the settings" "$(cmdhook status '--config')" "REVIEW=risk"
-out=$(cmdhook change 'step 1 should print one')
-has "/change before anything is built: reopen" "$out" "MODE reopen"; has "…done by the hook" "$out" "REOPENED spec.md v2"
+has "/al-status runs in the hook" "$(cmdhook al-status '')" "show it to the user exactly"
+has "/al-status --config adds the settings" "$(cmdhook al-status '--config')" "REVIEW=risk"
+out=$(cmdhook al-change 'step 1 should print one')
+has "/al-change before anything is built: reopen" "$out" "MODE reopen"; has "…done by the hook" "$out" "REOPENED spec.md v2"
 bad grep -q 'CR-' <<<"$(ls $DD)"
 has "spec reopened, no change request" "$($L status)" "spec.md   draft v2"
 $A spec >/dev/null; has "re-approved unchanged" "$($L status)" "spec.md   approved v2"
-has "/implement with a draft spec says what to do" "$(git checkout -q main; $L new feat drafty >/dev/null; $L gate implement 2>&1)" "/approve spec, then /plan"
+has "/al-implement with a draft spec says what to do" "$(git checkout -q main; $L new feat drafty >/dev/null; $L gate implement 2>&1)" "/al-approve spec, then /al-plan"
 git checkout -q -- . 2>/dev/null; git clean -qfd specs 2>/dev/null
 
 mkfeat built 3 || exit 1
 $L start --session s9 >/dev/null; $L next >/dev/null; impl T001; $L log T001 implementer "DONE T001 x" >/dev/null
-has "/change with done work: change request" "$(cmdhook change 'step 2 prints two' s9)" "MODE cr"
+has "/al-change with done work: change request" "$(cmdhook al-change 'step 2 prints two' s9)" "MODE cr"
 awk '{ sub(/When step 2 runs, the system shall print 2\./, "When step 2 runs, the system shall print two."); print }' $DD/spec.md > x && mv x $DD/spec.md
 git commit -qam "docs: AC2 says two"
 has "the hand edit is named" "$($L status)" "AC2 changed since you approved spec.md"
-has "/change --adopt" "$(cmdhook change '--adopt' s9)" "MODE adopt"
+has "/al-change --adopt" "$(cmdhook al-change '--adopt' s9)" "MODE adopt"
 out=$($L cr-new --adopt); has "adopt fills the Delta" "$out" "MODIFIED AC2 — When step 2 runs, the system shall print two. (was: When step 2 runs, the system shall print 2.)"
 C2=$(printf '%s\n' "$out" | awk '$1 == "FILE" { print $2 }')
 fill $C2 <<'PY'
@@ -511,15 +518,15 @@ has "the edit is still there" "$(cat $DD/spec.md)" "shall print two"
 out=$($A spec 2>&1); has "re-approval applies the adopted CR" "$out" "APPROVED spec v2"; has "and reopens plan + tasks" "$out" "REOPENED tasks.md v2"
 $A plan >/dev/null; has "plan + tasks approved again" "$($L status)" "tasks.md  approved v2"
 
-out=$($L add-fix "sub prints garbage for empty input"); has "/fix adds a task" "$out" "ADDED T004 — fix: sub prints garbage for empty input (runs before T002)"
+out=$($L add-fix "sub prints garbage for empty input"); has "/al-fix adds a task" "$out" "ADDED T004 — fix: sub prints garbage for empty input (runs before T002)"
 has "fix task committed" "$(git log -1 --format=%s)" "add T004 — fix"
 has "tasks still approved" "$($L status)" "tasks.md  approved v2"
 has "the fix runs next" "$($L start --session s9 >/dev/null; $L next)" "ACTION implement T004"
-has "/fix on an unmerged feature adds a task" "$(cmdhook fix 'x')" "MODE task"
+has "/al-fix on an unmerged feature adds a task" "$(cmdhook al-fix 'x')" "MODE task"
 git branch -q merged-snap main; git checkout -q main; git merge -q --no-ff --no-edit "feat/$FF" >/dev/null 2>&1; git checkout -q "feat/$FF"
-has "/fix on a merged feature starts a quick fix" "$(cmdhook fix 'x')" "MODE quick"
-has "/change after merge points to --supersedes" "$(cmdhook change 'x')" "supersedes"
-git checkout -q main; has "/fix with no feature starts a quick fix" "$(cmdhook fix 'x')" "MODE quick"
+has "/al-fix on a merged feature starts a quick fix" "$(cmdhook al-fix 'x')" "MODE quick"
+has "/al-change after merge points to --supersedes" "$(cmdhook al-change 'x')" "supersedes"
+git checkout -q main; has "/al-fix with no feature starts a quick fix" "$(cmdhook al-fix 'x')" "MODE quick"
 git reset -q --hard merged-snap; git branch -q -D merged-snap; git checkout -q "feat/$FF"
 
 echo "src partial" > "src/$FN-T004.sh"
@@ -557,7 +564,7 @@ has "status shows it" "$($L status)" "Build: paused (graceful)"
 impl T001
 has "the current task still completes" "$($L log T001 implementer "DONE T001 x")" "ACTION next"
 has "then the loop pauses" "$($L next)" "ACTION pause"
-has "/resume continues at the following task" "$($L start --session s13; $L next)" "ACTION implement T002"
+has "/al-resume continues at the following task" "$($L start --session s13; $L next)" "ACTION implement T002"
 has "pause now" "$($L pause --now)" "(now)"
 eq "pause now: a kit agent's next tool call is denied" "$(gb implementer "ls")" deny
 has "…with the reason" "$(printf '{"agent_type":"implementer","tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"%s","session_id":"s13"}' "$T" | $G)" "agent-loop is paused"
@@ -619,8 +626,19 @@ cat > "$U/.claude/settings.json" <<'JSON'
  "UserPromptExpansion":[{"matcher":"approve|plan-feature|implement|amend","hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/hooks/on-command.sh","args":[],"timeout":300}]}]}}
 JSON
 printf 'VERIFY_CMD="make verify"\nMAX_FIX_ROUNDS=2\n' > "$U/.claude/loop.conf"
+for o in plan implement status; do   # kit skills from before the al- prefix
+	mkdir -p "$U/.claude/skills/$o"
+	printf -- '---\nname: %s\ndescription: old kit skill\ndisable-model-invocation: true\nallowed-tools: Bash(.claude/scripts/loop.sh *) Bash(./.claude/scripts/loop.sh *)\n---\nold\n' "$o" > "$U/.claude/skills/$o/SKILL.md"
+done
+echo "old loop" > "$U/.claude/skills/implement/LOOP.md"
+mkdir -p "$U/.claude/skills/fix"
+printf -- '---\nname: fix\ndescription: my own fix skill\n---\nmine\n' > "$U/.claude/skills/fix/SKILL.md"
 has "upgrade flags a pre-profile loop.conf" "$("$KIT/install.sh" "$U")" "predates profiles"
 test -f "$U/.claude/loop.conf.v0.2" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL upgrade leaves the v0.2 loop.conf next to yours"; }
+for o in plan implement status; do bad test -d "$U/.claude/skills/$o"; done
+has "old kit skills go to the backup folder" "$(ls -d "$U"/.claude/agent-loop-backup-*/.claude/skills/* 2>/dev/null)" "skills/implement"
+has "a user skill named fix is kept" "$(cat "$U/.claude/skills/fix/SKILL.md")" "my own fix skill"
+eq "the kit installs only al- skills" "$(ls "$U/.claude/skills" | grep -v '^al-' | tr '\n' ' ')" "fix "
 eq "upgrade keeps your loop.conf" "$(cat "$U/.claude/loop.conf")" "$(printf 'VERIFY_CMD="make verify"\nMAX_FIX_ROUNDS=2')"
 us=$(cat "$U/.claude/settings.json")
 eq "upgrade drops every v0.1 kit deny" "$(jq -c '[.permissions.deny[] | select(startswith("Edit(") or startswith("Read("))] | length' <<<"$us")" 0

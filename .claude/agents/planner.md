@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Drafts specs/<feature>/plan.md AND tasks.md from an APPROVED spec — chosen approach, real alternatives with pros/cons, design, AC coverage, test strategy, then ordered tasks with size and risk — and returns the open questions for the human. Used by /plan.
+description: Drafts specs/<feature>/plan.md AND tasks.md from an APPROVED spec — chosen approach, real alternatives with pros/cons, design, AC coverage, test strategy, then ordered tasks with size and risk — and returns the open questions for the human. Used by /al-plan.
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: opus
 permissionMode: acceptEdits

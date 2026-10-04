@@ -1,6 +1,6 @@
 ---
 name: spec-critic
-description: Read-only adversarial review of a DRAFT spec.md — finds vague or untestable acceptance criteria, missing edge cases and contradictions, and returns questions for the human. Used by /spec before the human approves.
+description: Read-only adversarial review of a DRAFT spec.md — finds vague or untestable acceptance criteria, missing edge cases and contradictions, and returns questions for the human. Used by /al-spec before the human approves.
 tools: Read, Grep, Glob
 model: sonnet
 ---

@@ -5,7 +5,7 @@
 # editing code. As soon as you type something that isn't a kit command, the run is
 # paused (the current agent finishes its task; "pause now" stops agents at their next
 # tool call) and the run flag is released, so Claude can do what you asked.
-# /resume continues the build. A prompt typed while a turn is running reaches this
+# /al-resume continues the build. A prompt typed while a turn is running reaches this
 # hook at the orchestrator's next tool boundary; after Esc it reaches it at once.
 set -u
 input=$(cat)
@@ -24,11 +24,10 @@ case $(printf '%s' "$prompt" | awk 'NF { sub(/^[[:space:]]+/, ""); print; exit }
 	"<task-notification>"* | "<local-command-"* | "<command-name>"* | "<command-message>"* | "<system-reminder>"* | "<bash-input>"* | "<bash-stdout>"* | "<bash-stderr>"*) exit 0 ;;
 esac
 
-# kit commands manage the run themselves
+# kit commands (all of them start with /al-) manage the run themselves; anything else is a plain prompt
 first=$(printf '%s' "$prompt" | awk 'NF { print $1; exit }')
-first=${first##*:}
 case $first in
-	/spec | /plan | /plan-feature | /approve | /implement | /change | /amend | /fix | /quick | /pause | /resume | /status | /answer) exit 0 ;;
+	/al-* | /*:al-*) exit 0 ;;
 esac
 
 held=0
@@ -44,6 +43,6 @@ case $(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:][:p
 	"pause now" | "stop now" | stop) now=--now ;;
 esac
 out=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/loop.sh" pause --session "$sid" $now 2>&1)
-jq -cn --arg c "agent-loop: the build was paused because the user sent a message ($out). If an agent is still working, wait for it, log its result with loop.sh log as usual, then stop dispatching: the next loop.sh call says ACTION pause. Then do what the user asked — you are no longer the orchestrator. /resume continues the build." \
+jq -cn --arg c "agent-loop: the build was paused because the user sent a message ($out). If an agent is still working, wait for it, log its result with loop.sh log as usual, then stop dispatching: the next loop.sh call says ACTION pause. Then do what the user asked — you are no longer the orchestrator. /al-resume continues the build." \
 	'{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$c}}'
 exit 0

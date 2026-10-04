@@ -1,6 +1,6 @@
 ---
 name: quick-builder
-description: Implements a whole approved /quick brief (≤5 steps) in one go — tests first, targeted tests, mutation check when required, commit with trailers. Dispatched by the /implement loop for quick features; fix rounds continue the same agent.
+description: Implements a whole approved /al-quick brief (≤5 steps) in one go — tests first, targeted tests, mutation check when required, commit with trailers. Dispatched by the /al-implement loop for quick features; fix rounds continue the same agent.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: sonnet
 permissionMode: acceptEdits

@@ -1,6 +1,6 @@
 ---
 name: impact-analyst
-description: Turns a requested change to approved, partly built work into a change request (CR) — the exact AC delta, which done tasks and commits it hits, what reopens. Writes only the CR file. Used by /change, including adopt mode (the user's own edit of the spec) and reconcile mode (code that drifted from the spec).
+description: Turns a requested change to approved, partly built work into a change request (CR) — the exact AC delta, which done tasks and commits it hits, what reopens. Writes only the CR file. Used by /al-change, including adopt mode (the user's own edit of the spec) and reconcile mode (code that drifted from the spec).
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: opus
 permissionMode: acceptEdits

@@ -238,13 +238,13 @@ check_brief() { # file
 	ids=$(_ac_text "$f" | ac_active)
 	n=$(printf '%s\n' $ids | grep -c .)
 	[ "$n" -ge 1 ] || err "no acceptance criteria — add lines like: - **AC1** — When <trigger>, the system shall <result>."
-	[ "$n" -le "$QUICK_MAX_ACS" ] || err "too big for /quick: $n acceptance criteria (max $QUICK_MAX_ACS) — use /spec for this one"
+	[ "$n" -le "$QUICK_MAX_ACS" ] || err "too big for /al-quick: $n acceptance criteria (max $QUICK_MAX_ACS) — use /al-spec for this one"
 	# shellcheck disable=SC2086
 	_shall "$f" $ids
 	_ids_kept "$f"
 	steps=$(section "$f" "Steps" | grep -E '^[[:space:]]*[-*][[:space:]]+(\*\*)?S[0-9]+')
 	ns=$(printf '%s\n' "$steps" | grep -c .)
-	[ "$ns" -le "$QUICK_MAX_STEPS" ] || err "too big for /quick: $ns steps (max $QUICK_MAX_STEPS) — use /spec for this one"
+	[ "$ns" -le "$QUICK_MAX_STEPS" ] || err "too big for /al-quick: $ns steps (max $QUICK_MAX_STEPS) — use /al-spec for this one"
 	printf '%s\n' "$steps" | grep -v 'Tests:' | grep -q . && err "every step needs 'Tests: <named behaviour tests>' (or 'Tests: none — <reason>')"
 	_markers "$f"
 	return $_e
@@ -268,7 +268,7 @@ check_change() { # file
 	if [ "$nac" -gt 0 ] && [ "$scope" != spec ]; then err "the Delta changes acceptance criteria, so scope must be 'spec'"; fi
 	if [ "$nac" = 0 ] && [ "$scope" = spec ] && [ "$class" != clarification ]; then err "scope 'spec' needs AC lines in the Delta (or class 'clarification')"; fi
 	if is_quick; then target=$(art brief); else target=$(art spec); fi
-	# the Delta is relative to the approved version: with /change --adopt the file already holds the edit
+	# the Delta is relative to the approved version: with /al-change --adopt the file already holds the edit
 	if [ "$(art_state "$target")" = changed ]; then
 		base=$(_old_ac_text "$target" "$(approval_sha "$target")")
 	else

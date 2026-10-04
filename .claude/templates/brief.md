@@ -17,7 +17,7 @@ fingerprint:
 <!-- What changes and why, 2-5 lines. fix: repro + expected vs actual. -->
 
 ## Acceptance
-<!-- At most 5 (more = use /spec).
+<!-- At most 5 (more = use /al-spec).
 - **AC1** — When <trigger>, the system shall <observable result>.
 -->
 

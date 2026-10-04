@@ -8,7 +8,7 @@
 # Usage: .claude/scripts/loop.sh <command> [args]   (run from the repo root)
 #   status [feature]                  where things stand + the next step
 #   config [TASK] | cfg KEY           every setting's effective value and where it came from
-#   pause [--now]                     pause this repo's build (from any terminal); /resume continues
+#   pause [--now]                     pause this repo's build (from any terminal); /al-resume continues
 #   verify | test <args>              run VERIFY_CMD / TEST_CMD
 #   impact <ACn...> | lineage | report | doctor | suggest-verify
 #   check spec|plan|tasks|brief [--draft]  |  check change [CR-nnn]
@@ -192,27 +192,27 @@ next_step() {
 	if is_quick; then
 		st=$(art_state "$(art brief)")
 		case $st in
-			draft) echo "review $(art brief), then /approve brief (it builds right after)" ;;
-			approved) [ "$(state_get Q)" = PASS ] && echo "done — read the report (loop.sh report) and open the PR" || echo "/implement" ;;
+			draft) echo "review $(art brief), then /al-approve brief (it builds right after)" ;;
+			approved) [ "$(state_get Q)" = PASS ] && echo "done — read the report (loop.sh report) and open the PR" || echo "/al-implement" ;;
 			*) art_why "$(art brief)" "$st" ;;
 		esac
 		return
 	fi
-	c=$(draft_crs | head -1); [ -n "$c" ] && { echo "$c is waiting: /approve change (or edit it, or delete it)"; return; }
+	c=$(draft_crs | head -1); [ -n "$c" ] && { echo "$c is waiting: /al-approve change (or edit it, or delete it)"; return; }
 	st=$(art_state "$(art spec)")
 	case $st in
-		missing) echo "/spec <requirement>"; return ;;
-		draft) echo "review $(art spec), then /approve spec (or keep refining with /spec)"; return ;;
+		missing) echo "/al-spec <requirement>"; return ;;
+		draft) echo "review $(art spec), then /al-approve spec (or keep refining with /al-spec)"; return ;;
 		approved) ;;
 		*) art_why "$(art spec)" "$st"; return ;;
 	esac
 	st=$(art_state "$(art plan)")
 	case $st in
-		missing) echo "/plan"; return ;;
+		missing) echo "/al-plan"; return ;;
 		draft)
 			if check_plan "$(art plan)" approve >/dev/null 2>&1 && check_tasks "$(art tasks)" >/dev/null 2>&1; then
-				echo "review $(art plan) and tasks.md, then /approve plan (it approves the tasks too)"
-			else echo "/plan to finish the draft plan (loop.sh check plan / check tasks list what's missing), then /approve plan"; fi
+				echo "review $(art plan) and tasks.md, then /al-approve plan (it approves the tasks too)"
+			else echo "/al-plan to finish the draft plan (loop.sh check plan / check tasks list what's missing), then /al-approve plan"; fi
 			return ;;
 		approved) ;;
 		*) art_why "$(art plan)" "$st"; return ;;
@@ -222,29 +222,29 @@ next_step() {
 	[ "$st" = approved ] || { art_why "$(art tasks)" "$st"; return; }
 	ce=$(chain_errors tasks) || { echo "$ce"; return; }
 	q=$(open_questions | tr '\n' ' ')
-	[ -n "$q" ] && { echo "answer $q: /answer <Qn> <your answer>, then /resume"; return; }
+	[ -n "$q" ] && { echo "answer $q: /al-answer <Qn> <your answer>, then /al-resume"; return; }
 	for c in $(task_ids "$(art tasks)"); do
 		case $(state_get "$c") in
-			STOPPED) echo "$c hit the fix-round limit: its last attempt is committed on top of $(short "$(sfile_get "base.$c")"). Fix it by hand and /resume, or drop it (git reset --hard $(short "$(sfile_get "base.$c")")), edit the task in tasks.md, and /resume"; return ;;
-			ESCALATED) echo "$c needs your decision (the reviewer's ESCALATE): /change the spec, or fix the code yourself; then /resume"; return ;;
+			STOPPED) echo "$c hit the fix-round limit: its last attempt is committed on top of $(short "$(sfile_get "base.$c")"). Fix it by hand and /al-resume, or drop it (git reset --hard $(short "$(sfile_get "base.$c")")), edit the task in tasks.md, and /al-resume"; return ;;
+			ESCALATED) echo "$c needs your decision (the reviewer's ESCALATE): /al-change the spec, or fix the code yourself; then /al-resume"; return ;;
 		esac
 	done
 	for c in $(task_ids "$(art tasks)"); do
-		case $(state_get "$c") in PASS | NEEDS-HUMAN) ;; *) in_list "$c" "$(done_tasks)" || { echo "/implement"; return; } ;; esac
+		case $(state_get "$c") in PASS | NEEDS-HUMAN) ;; *) in_list "$c" "$(done_tasks)" || { echo "/al-implement"; return; } ;; esac
 	done
 	local nh=""
 	for c in $(task_ids "$(art tasks)"); do [ "$(state_get "$c")" = NEEDS-HUMAN ] && nh="$nh $c"; done
 	st=$(state_get BRANCH); [ "$(cfg REVIEW)" = none ] && st=PASS
 	case $st in
 		PASS | FIX | ESCALATE) echo "done — read the report (loop.sh report)${nh:+, do the manual checks for$nh}, then open the PR" ;;
-		*) echo "/implement (branch review pending)" ;;
+		*) echo "/al-implement (branch review pending)" ;;
 	esac
 }
 
 cmd_status() {
 	local id st c
 	if ! soft_feature "${1:-}"; then
-		echo "No feature on this branch ($(current_branch)). Start one: /spec <requirement>  or  /quick <small change>"
+		echo "No feature on this branch ($(current_branch)). Start one: /al-spec <requirement>  or  /al-quick <small change>"
 		return 0
 	fi
 	echo "Feature  $F  ($(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind), branch $(current_branch), base $(base_branch))"
@@ -253,7 +253,7 @@ cmd_status() {
 		for c in $(cr_files); do printf '  %-9s %s (scope %s)%s\n' "$(basename "$c" .md)" "$(art_state "$c")" "$(fm_get "$c" scope)" "$([ -n "$(fm_get "$c" applied)" ] && echo ", applied")"; done
 	fi
 	st=$(open_questions | tr '\n' ' '); [ -n "$st" ] && echo "  open questions: $st(research.md)"
-	if [ -f "$(sdir)/paused" ]; then echo "Build: paused ($(cut -d' ' -f1 "$(sdir)/paused" | sed 's/mode=//')) — /resume continues"
+	if [ -f "$(sdir)/paused" ]; then echo "Build: paused ($(cut -d' ' -f1 "$(sdir)/paused" | sed 's/mode=//')) — /al-resume continues"
 	elif [ -f "$(sdir)/lock" ]; then echo "Build: running in session $(cut -d' ' -f1 "$(sdir)/lock") (type any message there to pause it)"; fi
 	if is_quick; then
 		[ -n "$(state_get Q)" ] && echo "Build: $(state_get Q)"
@@ -274,8 +274,8 @@ pending_crs() { local c; for c in $(cr_files); do [ "$(fm_get "$c" status)" = ap
 gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan is approved, only tasks.md is open
 	local e p t st tst mode=new
 	calm_pause
-	is_quick && die "$F is a /quick change: it has a brief, not a plan.
-  do this: /approve brief (it builds right after), or /change to amend the brief"
+	is_quick && die "$F is a /al-quick change: it has a brief, not a plan.
+  do this: /al-approve brief (it builds right after), or /al-change to amend the brief"
 	e=$(chain_errors spec) || die "the planner can't start yet:
   $e"
 	p=$(art plan); t=$(art tasks); st=$(art_state "$p"); tst=$(art_state "$t")
@@ -285,7 +285,7 @@ gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan i
 		approved)
 			case $tst in
 				approved) die "plan.md and tasks.md are already approved.
-  do this: /implement to build — or /change plan <what> to change them" ;;
+  do this: /al-implement to build — or /al-change plan <what> to change them" ;;
 				missing | draft) mode=tasks ;;
 				*) die "$(art_why "$t" "$tst")" ;;
 			esac ;;
@@ -306,7 +306,7 @@ gate_implement() {
 	if is_quick; then e=$(chain_errors brief); else e=$(chain_errors tasks); fi || die "not ready to build:
 $(printf '%s\n' "$e" | sed 's/^/  /')"
 	c=$(draft_crs | head -1); [ -z "$c" ] || die "$c is waiting for your decision.
-  do this: /approve change   (or edit it, or delete the file)"
+  do this: /al-approve change   (or edit it, or delete the file)"
 	br=$(current_branch); [ "$br" != "$(base_branch)" ] || die "you're on $br, not on the feature's branch.
   do this: git switch <the feature's branch>"
 	[ -n "$VERIFY_CMD" ] || die "$(verify_unset_msg)"
@@ -314,7 +314,7 @@ $(printf '%s\n' "$e" | sed 's/^/  /')"
 	if ! tree_clean; then
 		c=$(interrupted_task)
 		[ -n "$c" ] || die "the working tree has uncommitted changes: $(git status --short | head -5 | tr '\n' ' ')
-  do this: commit or stash them, then /implement again"
+  do this: commit or stash them, then /al-implement again"
 		echo "NOTE $c was interrupted and left uncommitted work — you'll be asked: continue, discard or keep it"
 	fi
 	echo "GATE implement: OK"
@@ -355,17 +355,17 @@ gate_change() { # [--adopt] [--reconcile] [spec|plan|tasks] <request> -> MODE ed
 	if is_quick; then what=brief; else what=${what:-spec}; fi
 	calm_pause
 	merged && die "$F is already merged into $(base_branch), so it is history now.
-  do this: /spec --supersedes ${F%%-*} <the change>   (a new feature that replaces it)"
+  do this: /al-spec --supersedes ${F%%-*} <the change>   (a new feature that replaces it)"
 	f=$(art "$what")
 	[ -f "$f" ] || die "there is no $what.md in $F yet.
-  do this: /plan"
+  do this: /al-plan"
 	st=$(art_state "$f")
 	case $st in
 		draft) mode=edit ;;
 		approved | changed)
 			if [ $rec = 1 ]; then
 				built || die "nothing is built yet, so there is no code to reconcile with the spec.
-  do this: /change <what> (without --reconcile)"
+  do this: /al-change <what> (without --reconcile)"
 				mode=reconcile
 			elif built; then
 				if [ $adopt = 1 ] || [ "$st" = changed ]; then mode=adopt; else mode=cr; fi
@@ -374,9 +374,9 @@ gate_change() { # [--adopt] [--reconcile] [spec|plan|tasks] <request> -> MODE ed
 	esac
 	if [ "$mode" = adopt ] && [ "$st" != changed ]; then
 		die "${f##*/} has no edits since you approved it, so there is nothing to adopt.
-  do this: edit it first, or /change <what> without --adopt"
+  do this: edit it first, or /al-change <what> without --adopt"
 	fi
-	[ -f "$STATE_ROOT/$F/lock" ] && echo "NOTE a build is running for $F — it pauses now; /resume after the change"
+	[ -f "$STATE_ROOT/$F/lock" ] && echo "NOTE a build is running for $F — it pauses now; /al-resume after the change"
 	echo "GATE change: OK"
 	echo "FEATURE $F"
 	echo "TARGET $what"
@@ -390,8 +390,8 @@ gate_change() { # [--adopt] [--reconcile] [spec|plan|tasks] <request> -> MODE ed
 gate_fix() { # -> MODE task (add a fix task to this feature) | quick (a new fix/ branch from the base)
 	if soft_feature; then
 		if merged; then echo "GATE fix: OK"; echo "MODE quick"; echo "WHY $F is merged — the fix gets its own branch"; return 0; fi
-		is_quick && die "$F is a /quick change: it has no task list to add a fix to.
-  do this: /change <the fix>   (amends its brief)"
+		is_quick && die "$F is a /al-quick change: it has no task list to add a fix to.
+  do this: /al-change <the fix>   (amends its brief)"
 		echo "GATE fix: OK"; echo "FEATURE $F"; echo "MODE task"
 		return 0
 	fi
@@ -448,7 +448,7 @@ pre_task() { # id -> 0 ok (base recorded) | 1 with STOP-REASON lines
 	if [ "$(state_get "$id")" = BLOCKED ]; then
 		q=$(state_detail "$id")
 		if open_questions | grep -qx "$q"; then
-			echo "STOP-REASON $q is still open in $(art research) — answer it (change '(open)' to '(answered)' and write the answer), then /implement"
+			echo "STOP-REASON $q is still open in $(art research) — answer it (change '(open)' to '(answered)' and write the answer), then /al-implement"
 			return 1
 		fi
 	fi
@@ -652,7 +652,7 @@ parse_run_flags() { # flags... -> RUN_CONF (KEY=value lines) or dies with the va
 						*) die "--model $pair: '$k' is not a task id (T002) or an agent (implementer, reviewer, branch-reviewer, planner, quick, impact)" ;;
 					esac
 				done ;;
-			*) die "unknown flag '$f' — /implement takes: --profile fast|balanced|strict, --review none|branch|risk|every, --verify targeted|task|every-N|end|off, --fix-rounds 0-3, --mutation off|risk|every, --model T002=haiku,reviewer=opus" ;;
+			*) die "unknown flag '$f' — /al-implement takes: --profile fast|balanced|strict, --review none|branch|risk|every, --verify targeted|task|every-N|end|off, --fix-rounds 0-3, --mutation off|risk|every, --model T002=haiku,reviewer=opus" ;;
 		esac
 		shift; [ $# -gt 0 ] && shift
 	done
@@ -742,7 +742,7 @@ cmd_next() {
 	resolve_feature
 	if [ -f "$(sdir)/paused" ]; then
 		release_lock; calm_pause; log_event "PAUSED at a task boundary"
-		echo "Paused. /resume continues from here."; echo "ACTION pause"; return 0
+		echo "Paused. /al-resume continues from here."; echo "ACTION pause"; return 0
 	fi
 	if is_quick; then
 		st=$(state_get Q)
@@ -787,7 +787,7 @@ cmd_log() {
 	verdict=${1:-}; w2=${2:-}; w3=${3:-}
 	if pause_mode now; then
 		log_event "$id $agent stopped by pause now: '$line'"; release_lock; calm_pause
-		echo "Paused now: $id is left as it was; /resume decides what happens to its work."; echo "ACTION pause"; return 0
+		echo "Paused now: $id is left as it was; /al-resume decides what happens to its work."; echo "ACTION pause"; return 0
 	fi
 	case $agent in
 		implementer | quick-builder)
@@ -893,7 +893,7 @@ cmd_dirty() { # <ID> continue|discard|keep — what happens to the uncommitted w
 		keep)
 			log_event "$id: the user keeps its uncommitted work as their own change"
 			release_lock
-			echo "The work stays in the tree as your change. Commit it (or not) yourself; then /resume runs $id again from the new HEAD."
+			echo "The work stays in the tree as your change. Commit it (or not) yourself; then /al-resume runs $id again from the new HEAD."
 			echo "ACTION stop keep $id" ;;
 		*) die "say what to do with $id's uncommitted work.
   do this: loop.sh dirty $id continue|discard|keep" ;;
@@ -921,7 +921,7 @@ cmd_pause() { # [--now] [--session ID] [feature] — the run stops at the next t
 		sfile_set pausehead "$(git rev-parse HEAD)"
 		release_lock
 		log_event "PAUSE requested ($mode)"
-		echo "PAUSED $F ($mode) — /resume continues the build"
+		echo "PAUSED $F ($mode) — /al-resume continues the build"
 	done
 }
 
@@ -1133,15 +1133,15 @@ adopt_delta() { # file approval-sha -> Delta lines (ADDED / MODIFIED / REMOVED) 
 cmd_add_fix() { # <the bug, in words> -> a not-started task "Tnnn — fix: <bug>" placed before the first open task, committed
 	local bug="$*" t sha ids max next first subj scope tmp
 	resolve_feature
-	is_quick && die "$F is a /quick change: it has no task list.
-  do this: /change <the fix>"
+	is_quick && die "$F is a /al-quick change: it has no task list.
+  do this: /al-change <the fix>"
 	[ -n "$bug" ] || die "say what is broken.
-  do this: /fix <what goes wrong, and when>"
+  do this: /al-fix <what goes wrong, and when>"
 	t=$(art tasks)
 	[ "$(art_state "$t")" = approved ] || die "tasks.md isn't approved, so a fix task can't join it yet:
   $(art_why "$t" "$(art_state "$t")")"
 	tree_clean || die "the working tree has uncommitted changes.
-  do this: commit or stash them, then /fix again"
+  do this: commit or stash them, then /al-fix again"
 	sha=$(approval_sha "$t")
 	ids=$( { task_ids "$t"; git show "$sha:$t" 2>/dev/null | strip_fm | strip_noise | task_ids_stdin; } | sort -u)
 	max=$(printf '%s\n' $ids | sort | tail -1); max=${max#T}
@@ -1171,10 +1171,10 @@ cmd_add_fix() { # <the bug, in words> -> a not-started task "Tnnn — fix: <bug>
 $tmp"
 	fi
 	git commit -q -m "docs($F): add $next — fix: $subj" -- "$t" || die "committing tasks.md failed"
-	log_event "$next added by /fix: $bug"
+	log_event "$next added by /al-fix: $bug"
 	echo "ADDED $next — fix: $bug$( [ -n "$first" ] && echo " (runs before $first)")"
 	if [ "$(cfg AUTO_APPROVE_TASKS)" = on ]; then echo "NEXT the build runs $next now"
-	else echo "NEXT /approve tasks (AUTO_APPROVE_TASKS=off), then /implement"; fi
+	else echo "NEXT /al-approve tasks (AUTO_APPROVE_TASKS=off), then /al-implement"; fi
 }
 
 question_lines() { # Qn -> QUESTION <text> and OPTION <text> lines from research.md, for the question card
@@ -1196,9 +1196,9 @@ cmd_answer() { # Qn <answer> — record your answer, commit research.md, restore
 	resolve_feature
 	shift || true; txt="$*"
 	case $q in Q[0-9]*) ;; *) die "say which question and the answer.
-  do this: /answer Q2 <your answer>" ;; esac
+  do this: /al-answer Q2 <your answer>" ;; esac
 	[ -n "$txt" ] || die "the answer is missing.
-  do this: /answer $q <your answer>"
+  do this: /al-answer $q <your answer>"
 	r=$(art research)
 	open_questions | grep -qx "$q" || die "$q is not an open question in $r.
   do this: .claude/scripts/loop.sh status   (lists the open ones)"
@@ -1216,7 +1216,7 @@ cmd_answer() { # Qn <answer> — record your answer, commit research.md, restore
 	ref=$(git stash list --format='%gd%x09%s' | I="$id blocked on $q" awk -F '\t' 'index($2, ENVIRON["I"]) { print $1; exit }')
 	if [ -n "$ref" ]; then
 		git stash pop -q "$ref" || die "$id's earlier attempt ($ref) didn't apply cleanly onto HEAD.
-  do this: resolve the conflict in the files git lists, then /resume"
+  do this: resolve the conflict in the files git lists, then /al-resume"
 	fi
 	sfile_set "base.$id" "$(git rev-parse HEAD)"; sfile_set "rounds.$id" 0
 	state_set "$id" IN-PROGRESS "restored after $q"

@@ -1,11 +1,11 @@
 ---
-name: plan
-description: Draft the technical plan AND the task list for the current feature (requires an approved spec), then ask you the open questions. /approve plan approves both in one step.
+name: al-plan
+description: Draft the technical plan AND the task list for the current feature (requires an approved spec), then ask you the open questions. /al-approve plan approves both in one step.
 disable-model-invocation: true
 allowed-tools: Bash(.claude/scripts/loop.sh *) Bash(./.claude/scripts/loop.sh *)
 ---
 
-# /plan
+# /al-plan
 
 ## Gate (if this failed, the planner does not run)
 !`.claude/scripts/loop.sh gate plan`
@@ -18,6 +18,6 @@ allowed-tools: Bash(.claude/scripts/loop.sh *) Bash(./.claude/scripts/loop.sh *)
    - if it can't be reached, dispatch a fresh planner with `Feature: <FEATURE>. Mode: revise. Answers: …`.
 4. Run `.claude/scripts/loop.sh check plan` and `.claude/scripts/loop.sh check tasks`. If they report problems the planner should fix, send them back once (same agent, SendMessage).
 5. Show the user: the chosen approach (1-2 lines); each alternative with one line on why not; the top risks; the tasks, one line each (id — title — size/risk); whether every AC is covered. End with:
-   "Review `specs/<feature>/plan.md` and `tasks.md`. Type `/approve plan` — it approves the tasks too — or tell me what to change." (Mode `tasks`: "Type `/approve tasks`.")
+   "Review `specs/<feature>/plan.md` and `tasks.md`. Type `/al-approve plan` — it approves the tasks too — or tell me what to change." (Mode `tasks`: "Type `/al-approve tasks`.")
 
 You never approve and never write code. A hook blocks the planner's writes unless the spec is approved.

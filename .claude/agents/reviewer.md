@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Read-only reviewer with fresh context. Judges one task's commit, a quick brief, or the whole branch against the APPROVED spec — correctness, security, scope, test quality, tampering with checks — and answers PASS, FIX or ESCALATE. Never edits. Dispatched by the /implement loop.
+description: Read-only reviewer with fresh context. Judges one task's commit, a quick brief, or the whole branch against the APPROVED spec — correctness, security, scope, test quality, tampering with checks — and answers PASS, FIX or ESCALATE. Never edits. Dispatched by the /al-implement loop.
 tools: Read, Grep, Glob, Bash
 model: opus
 ---

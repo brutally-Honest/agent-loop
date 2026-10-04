@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # approve.sh — HUMAN-ONLY approval stamp (and reopen).
 #
-# Claude never runs this. You trigger it by typing /approve (or /change, which may reopen)
+# Claude never runs this. You trigger it by typing /al-approve (or /al-change, which may reopen)
 # in Claude Code — a UserPromptExpansion hook runs it from your keystroke — or you run it
 # in your own terminal. guard.sh denies it to every agent and to the main session, and
 # settings.json denies it as a permission rule.
@@ -34,9 +34,9 @@ while [ $# -gt 0 ]; do
 			if [ -z "$target" ]; then target=$1
 			elif [ "$target" = reopen ] && [ -z "$rtarget" ]; then rtarget=$1
 			else die "'$1' is one word too many.
-  do this: /approve spec|plan|tasks|brief|change   (or just /approve)"; fi ;;
+  do this: /al-approve spec|plan|tasks|brief|change   (or just /al-approve)"; fi ;;
 		-*) die "unknown option $1.
-  do this: /approve spec|plan|tasks|brief|change   (or just /approve)" ;;
+  do this: /al-approve spec|plan|tasks|brief|change   (or just /al-approve)" ;;
 		*) feat=$1 ;;
 	esac
 	shift
@@ -48,7 +48,7 @@ resolve_feature "$feat"
 br=$(current_branch) || die "you're on a detached HEAD, so there's nowhere to commit the approval.
   do this: git switch <the feature's branch>"
 [ "$br" != "$(base_branch)" ] || die "you're on $br; approvals are committed on the feature's branch.
-  do this: git switch <the feature's branch>, then /approve again"
+  do this: git switch <the feature's branch>, then /al-approve again"
 expect=$(fm_get "$(art spec)" branch)$(fm_get "$(art brief)" branch)
 if [ -n "$expect" ]; then
 	[ "$br" = "$expect" ] || die "$F lives on branch $expect, but you're on $br.
@@ -162,15 +162,15 @@ $e"
 sha256 $(fm_get "$f" sha256)"
 	echo "APPROVED spec v$ver of $F ($(git rev-parse --short HEAD))"
 	[ -n "$casc" ] && printf '%s' "$casc"
-	if [ -n "$casc" ]; then echo "NEXT /plan — the planner revises the reopened plan and tasks for spec v$ver, then /approve plan"
-	elif [ "$(art_state "$p")" = approved ]; then echo "NEXT plan.md and tasks.md stay valid (the contract sections did not change) — /implement"
-	else echo "NEXT /plan"; fi
+	if [ -n "$casc" ]; then echo "NEXT /al-plan — the planner revises the reopened plan and tasks for spec v$ver, then /al-approve plan"
+	elif [ "$(art_state "$p")" = approved ]; then echo "NEXT plan.md and tasks.md stay valid (the contract sections did not change) — /al-implement"
+	else echo "NEXT /al-plan"; fi
 }
 
 approve_plan() { # stamps the plan; with AUTO_APPROVE_TASKS=on also a valid tasks.md, in the same commit
 	local f s t c e ver tver casc="" tnote="" subj body n pfp
-	is_quick && die "$F is a /quick feature — it has no plan.
-  do this: /approve brief"
+	is_quick && die "$F is a /al-quick feature — it has no plan.
+  do this: /al-approve brief"
 	e=$(chain_errors spec) || die "the spec must be approved before the plan:
   $e"
 	f=$(art plan); ready_or_die "$f"
@@ -190,10 +190,10 @@ spec-fingerprint $(contract_fp "$s")"
 	fi
 	subj="docs($F): approve plan v$ver"
 	case $(art_state "$t") in
-		missing) tnote="NEXT tasks.md is missing — /plan has the planner write it, then /approve tasks" ;;
+		missing) tnote="NEXT tasks.md is missing — /al-plan has the planner write it, then /al-approve tasks" ;;
 		draft | unproven)
 			if [ "$(cfg AUTO_APPROVE_TASKS)" != on ]; then
-				tnote="NEXT review $t, then /approve tasks (AUTO_APPROVE_TASKS=off)"
+				tnote="NEXT review $t, then /al-approve tasks (AUTO_APPROVE_TASKS=off)"
 			elif e=$(check_tasks "$t"); then
 				tver=$(fm_get "$t" version); tver=${tver:-1}
 				stamp "$t" human plan-fingerprint "$pfp"
@@ -204,13 +204,13 @@ $(rec "$t")
 plan-fingerprint $pfp"
 				n=$(task_ids "$t" | grep -c .)
 				tnote="APPROVED tasks v$tver of $F — $n tasks
-NEXT /implement"
+NEXT /al-implement"
 			else
 				tnote="tasks.md stays a draft — it does not pass the checks yet:
 $e
-NEXT fix tasks.md (by hand, or /plan), then /approve tasks"
+NEXT fix tasks.md (by hand, or /al-plan), then /al-approve tasks"
 			fi ;;
-		approved) tnote="NEXT /implement" ;;
+		approved) tnote="NEXT /al-implement" ;;
 		*) tnote="NEXT $(art_why "$t" "$(art_state "$t")")" ;;
 	esac
 	finish_commit "$subj" "$body"
@@ -221,8 +221,8 @@ NEXT fix tasks.md (by hand, or /plan), then /approve tasks"
 
 approve_tasks() {
 	local f p c e ver subj n st prev pfp
-	is_quick && die "$F is a /quick feature — it has no tasks.md.
-  do this: /approve brief"
+	is_quick && die "$F is a /al-quick feature — it has no tasks.md.
+  do this: /al-approve brief"
 	e=$(chain_errors plan) || die "the plan must be approved before the tasks:
   $e"
 	f=$(art tasks); st=$(art_state "$f")
@@ -249,13 +249,13 @@ $e"
 plan-fingerprint $pfp"
 	n=$(task_ids "$f" | grep -c .)
 	echo "APPROVED tasks v$ver of $F by $by — $n tasks ($(git rev-parse --short HEAD))"
-	echo "NEXT /implement"
+	echo "NEXT /al-implement"
 }
 
 approve_brief() {
 	local f c e ver
 	is_quick || die "$F has no brief.md (it is a full feature).
-  do this: /approve spec, /approve plan"
+  do this: /al-approve spec, /al-approve plan"
 	f=$(art brief); ready_or_die "$f"
 	e=$(check_brief "$f") || die "brief.md is not ready to approve:
 $e"
@@ -269,7 +269,7 @@ $e"
 	for c in $(pending_crs_where applied); do fm_set "$c" applied "brief v$ver"; done
 	finish_commit "docs($F): approve brief v$ver" "$(rec "$f")"
 	echo "APPROVED brief v$ver of $F ($(git rev-parse --short HEAD))"
-	echo "NEXT the build starts now (the /implement loop)"
+	echo "NEXT the build starts now (the /al-implement loop)"
 }
 
 approve_change() {
@@ -277,7 +277,7 @@ approve_change() {
 	if [ -n "$cr" ]; then c="$SPECS_DIR/$F/changes/$cr.md"
 	else c=$(for x in $(cr_files); do [ "$(fm_get "$x" status)" = draft ] && echo "$x"; done | tail -1); fi
 	[ -n "$c" ] && [ -f "$c" ] || die "there is no change request waiting.
-  do this: /change <what you want changed>"
+  do this: /al-change <what you want changed>"
 	name=$(basename "$c" .md)
 	ready_or_die "$c"
 	e=$(check_change "$c") || die "$name is not ready to approve:
@@ -304,10 +304,10 @@ $(rec "$c")"
 	echo "$casc"
 	case $scope in
 		spec)
-			if is_quick; then echo "NEXT apply the Delta of $name to brief.md exactly (strike removed ACs, never delete), run 'loop.sh check brief', then /approve brief"
-			else echo "NEXT apply the Delta of $name to spec.md exactly (strike removed ACs, never delete), run 'loop.sh check spec', then /approve spec — plan and tasks reopen automatically if the contract changed"; fi ;;
-		plan) echo "NEXT /plan (amend mode, guided by $name) — the planner revises plan.md and tasks.md — then /approve plan" ;;
-		tasks) echo "NEXT /plan (the planner revises tasks.md for $name), then /approve tasks" ;;
+			if is_quick; then echo "NEXT apply the Delta of $name to brief.md exactly (strike removed ACs, never delete), run 'loop.sh check brief', then /al-approve brief"
+			else echo "NEXT apply the Delta of $name to spec.md exactly (strike removed ACs, never delete), run 'loop.sh check spec', then /al-approve spec — plan and tasks reopen automatically if the contract changed"; fi ;;
+		plan) echo "NEXT /al-plan (amend mode, guided by $name) — the planner revises plan.md and tasks.md — then /al-approve plan" ;;
+		tasks) echo "NEXT /al-plan (the planner revises tasks.md for $name), then /al-approve tasks" ;;
 	esac
 }
 
@@ -319,13 +319,13 @@ reopen_cmd() {
   do this: approve.sh reopen $rtarget --reason \"why\""
 	f=$(art "$rtarget"); [ -f "$f" ] || die "there is no $rtarget.md in $F"
 	st=$(fm_get "$f" status)
-	[ "$st" = approved ] || die "$rtarget.md is already a draft — edit it, then /approve $rtarget"
+	[ "$st" = approved ] || die "$rtarget.md is already a draft — edit it, then /al-approve $rtarget"
 	snapshot
 	reopen_file "$f" "$reason"
 	[ "$rtarget" = plan ] && [ "$(fm_get "$(art tasks)" status)" = approved ] && reopen_file "$(art tasks)" "$reason (the planner revises plan and tasks together)"
 	ver=$(fm_get "$f" version)
 	finish_commit "docs($F): reopen $rtarget v$ver" "$reason"
-	echo "NEXT edit $f, then /approve $rtarget"
+	echo "NEXT edit $f, then /al-approve $rtarget"
 }
 
 if [ "$target" = auto ]; then
