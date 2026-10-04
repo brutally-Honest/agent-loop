@@ -618,7 +618,10 @@ cat > "$U/.claude/settings.json" <<'JSON'
  "hooks":{"PreToolUse":[{"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.sh","args":[],"timeout":30}]},{"matcher":"Bash","hooks":[{"type":"command","command":"my-own-hook.sh"}]}],
  "UserPromptExpansion":[{"matcher":"approve|plan-feature|implement|amend","hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/hooks/on-command.sh","args":[],"timeout":300}]}]}}
 JSON
-"$KIT/install.sh" "$U" >/dev/null
+printf 'VERIFY_CMD="make verify"\nMAX_FIX_ROUNDS=2\n' > "$U/.claude/loop.conf"
+has "upgrade flags a pre-profile loop.conf" "$("$KIT/install.sh" "$U")" "predates profiles"
+test -f "$U/.claude/loop.conf.v0.2" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL upgrade leaves the v0.2 loop.conf next to yours"; }
+eq "upgrade keeps your loop.conf" "$(cat "$U/.claude/loop.conf")" "$(printf 'VERIFY_CMD="make verify"\nMAX_FIX_ROUNDS=2')"
 us=$(cat "$U/.claude/settings.json")
 eq "upgrade drops every v0.1 kit deny" "$(jq -c '[.permissions.deny[] | select(startswith("Edit(") or startswith("Read("))] | length' <<<"$us")" 0
 eq "upgrade keeps the user's deny" "$(jq -c '.permissions.deny | index("Bash(rm -rf *)") != null' <<<"$us")" true

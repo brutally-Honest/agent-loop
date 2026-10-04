@@ -2,220 +2,205 @@
 
 Spec → plan → tasks → build → review for Claude Code, where every gate is a script or a hook rather than a sentence in a prompt the model may or may not follow.
 
-Think of a building contract. You sign the blueprint (**spec**). An architect draws the plans (**plan**) and the work schedule (**tasks**). Builders build one room at a time; an inspector checks each room against the blueprint; nothing is signed except by you. If you change your mind mid-build you don't scribble on the blueprint: you issue a **change order** (a change request), and the schedule is re-cut around the rooms already built.
+Think of a building contract. You sign the blueprint (**spec**). An architect draws the plans and the work schedule (**plan** + **tasks**). Builders build one room at a time; the site manager (a script) checks each room is really finished; an inspector looks at the risky rooms and at the whole house; nothing is signed except by you. Change your mind about a room nobody has built yet and you just redraw it; change one that's already built and you issue a **change order**.
 
-Works in any git repository and any language. The only repo-specific setting is the command that says "the repo is healthy" (`VERIFY_CMD`, e.g. `npm run lint && npm test` or `go vet ./... && go test ./...`). It has no default: `/implement` refuses to start until you set it, and `loop.sh suggest-verify` guesses one from your repo.
+Works in any git repository and any language. The one repo-specific setting is the command that says "the repo is healthy" (`VERIFY_CMD`, e.g. `npm run lint && npm test` or `go vet ./... && go test ./...`). It has no default: `/implement` refuses to start until you set it, and `loop.sh suggest-verify` guesses one from your repo.
 
----
-
-## Commands
-
-| You type | What happens | Gate |
-|---|---|---|
-| `/spec <rough requirement>` | Asks **local branch (default) or worktree**, creates `<kind>/NNN-slug` + `specs/NNN-slug/`, interviews you, has a critic look for gaps, drafts `spec.md` (draft). | — |
-| `/approve spec` | Validates the spec, stamps it approved, commits it. | **only you** — a hook runs it from your keystroke |
-| `/plan-feature` | The **planner** drafts `plan.md` (approach, real alternatives with pros/cons, design, AC coverage, test strategy), then you answer its open questions. | spec approved, or nothing runs |
-| `/approve plan` | Stamps the plan, then the **tasker** writes `tasks.md`; a hook validates it and approves it **automatically**. | only you |
-| `/implement` | Every task: **implementer** → deterministic post-task checks → **reviewer** → ≤2 fix rounds → next. Then a whole-branch review and a report. | spec + plan + tasks approved |
-| `/quick <small change>` | One `brief.md` (≤5 ACs, ≤5 steps) → `/approve brief` → the same build/review loop. | brief approved |
-| `/amend <what changed>` | The **impact-analyst** drafts a change request; `/approve change` reopens exactly what it changes. | approved, not yet merged |
-
-Everything else is a status check: `.claude/scripts/loop.sh status` (or `! .claude/scripts/loop.sh status` inside Claude Code) always prints where you are and the next step.
+**v0.2 in one paragraph:** the kit stays out of your way until you start a build — outside a kit run you (and Claude, and your other agents) can edit anything. A task costs one implementer plus script checks; reviewers look at risky tasks and at the whole branch. Every speed/cost knob is a setting you can override per run, task, feature or repo. Approvals survive edits that don't touch the contract. Everything — status, changes, fixes, answers, pause and resume — is a chat command. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## Install
-
-### Requirements and where it runs
-
-| Need | Why | Without it |
-|---|---|---|
-| **Claude Code** with `UserPromptExpansion`, `SubagentStop` and `agent_type` in hook input | `/approve` and the gate hooks, the agent output contracts, per-agent guard rules | Tested on **2.1.287** only. On older versions the hooks may silently not fire. `/approve` then tells you to use the terminal, and the agent contracts aren't enforced. |
-| **bash** | All scripts | Written for bash 3.2+ (macOS default); tested on bash 5.2 |
-| **git** ≥ 2.23 | `git switch`, worktrees, trailers | — |
-| **jq** | Every hook parses its JSON input with it | The guard **denies every Bash/Edit call** (fails closed on purpose) |
-| **sha256sum** or **shasum** | Approval hashes | Approvals can't be stamped or checked |
-| **POSIX awk, sed, grep** | Parsing specs and tasks | Standard on Linux and macOS |
-| Workspace trust accepted in Claude Code | Project allow rules and hooks apply | Prompts for every `loop.sh` call; hooks may be skipped |
-| **make** + **python3** | Only `selftest.sh` uses them | The kit itself doesn't need them |
-
-**Where it has actually been tested — no more than this:**
-
-| Platform | Status |
-|---|---|
-| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils, git 2.43) | **Tested.** `selftest.sh` passes 103/103 checks, and a full end-to-end run in Claude Code 2.1.287 (spec → plan → tasks → implement → `/amend` → rework → PASS), with all agents on haiku. |
-| macOS (bash 3.2, BSD awk/sed/grep) | **Not tested.** The scripts avoid bash-4 features and GNU-only flags, and mawk (a strict POSIX awk) passed, but nobody has run it on a Mac yet. Run `./selftest.sh` once; it needs no model calls and prints any check that fails. |
-| Windows | **Not tested, not supported natively.** Use WSL. Git Bash might work. |
-| Claude Code desktop app / IDE extensions / cloud sessions | **Not tested.** They use the same hooks and settings, so they should behave the same, but only the CLI was exercised. |
-| Agents on sonnet/opus (the defaults in the agent files) | **Not tested end to end.** The real runs used haiku for cost; stronger models should follow the contracts more easily, and the hooks enforce them either way. |
+## Quick start
 
 ```bash
-git clone <this kit> ~/agent-loop-kit        # or unzip it
+git clone <this kit> ~/agent-loop-kit
 ~/agent-loop-kit/install.sh /path/to/your/repo
 cd /path/to/your/repo
 .claude/scripts/loop.sh suggest-verify       # a guess from package.json / go.mod / Makefile / ...
-$EDITOR .claude/loop.conf                    # set VERIFY_CMD (required), TEST_CMD if you like
+$EDITOR .claude/loop.conf                    # set VERIFY_CMD (required); PROFILE if not "balanced"
 git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
 .claude/scripts/loop.sh doctor               # every line should say ok
 claude                                       # from the repo root; accept the workspace-trust prompt
 ```
 
-Optional: `~/agent-loop-kit/selftest.sh` exercises every gate, check and hook in a throwaway repo, with simulated agents and no model calls. It takes about 15 seconds, needs `python3` and `make`, and should print `all 103 checks passed`. Run it once on your machine (it's the quickest way to catch a platform difference, e.g. macOS bash 3.2 or BSD tools).
+Then, in Claude Code:
 
-`install.sh` is idempotent (re-run it to upgrade). It copies `.claude/{agents,skills,hooks,scripts,templates}`, keeps an existing `loop.conf`, **merges** `.claude/settings.json` (your keys stay; rules and hooks are added once), and adds `.agent-loop/`, `.claude/worktrees/` and `.claude/agent-loop-backup-*/` to `.gitignore`. Anything it would overwrite, including the old `/run-feature` command and `agent-bash-guard.sh`, goes to `.claude/agent-loop-backup-<timestamp>/`.
+```
+/spec rate-limit requests per tenant      → branch + interview + spec.md (draft)
+/approve spec                             → stamped by a hook from your keystroke
+/plan                                     → plan.md + tasks.md, then its open questions
+/approve plan                             → approves the plan and the tasks in one go
+/implement                                → builds task by task until done or your input is needed
+```
 
-Why each step matters:
-- **Commit the kit.** Clean-tree checks would otherwise trip on it, and a worktree branched from `main` needs the kit inside it.
-- **Accept workspace trust.** Until you do, Claude Code doesn't apply the project's allow rules, and in some setups it skips project hooks.
-- **Write an `AGENTS.md` or `CLAUDE.md`.** Optional, but every agent reads it for your conventions and hard rules.
+Small change? `/quick fix the off-by-one in pagination` → `/approve brief` → it builds.
 
 ---
 
-## The full flow
+## Commands
 
-```
- you                          agents                          scripts / hooks (deterministic)
- ───                          ──────                          ───────────────────────────────
- /spec "rate-limit per tenant"
-   branch or worktree? ──▶                                    loop.sh new → feat/012-rate-limit, specs/012-…/spec.md (draft)
-   answer 2-4 rounds ◀── interview, spec-critic finds gaps
- review spec.md
- /approve spec ─────────────────────────────────────────────▶ approve.sh: validate → stamp sha256 → commit
- /plan-feature ─────────────────────────────────────────────▶ gate: spec approved? (no → nothing runs)
-                              planner drafts plan.md ───────▶ stop hook: plan checks pass, "PLAN-DRAFTED n"
-   answer open questions ◀──
- /approve plan ─────────────────────────────────────────────▶ approve.sh: validate → stamp → commit
-                              tasker writes tasks.md ───────▶ stop hook: tasks checks pass → auto-approve → commit
- /implement ────────────────────────────────────────────────▶ gate: all three approved, clean tree, verify green
-                              per task:
-                              implementer (tests first) ────▶ stop hook + post-task: trailers, scope, tests touched, verify
-                              reviewer (fresh, read-only) ──▶ PASS / FIX (≤2 rounds) / ESCALATE
-                              …next task…
-                              branch review ────────────────▶ report
- read the report, open the PR
-```
-
-### 1. `/spec <rough requirement>`
-- **Branch first.** Claude asks one question card: *where* (Local branch (Recommended) / Worktree), *kind* (feat/fix/refactor/chore, best guess first) and *name* (slug suggestions). Say "worktree" or pass `--worktree` to skip the location question. `loop.sh new` then creates `<kind>/NNN-slug` from the base branch, plus `specs/NNN-slug/spec.md` and `research.md`. In worktree mode it creates `.claude/worktrees/NNN-slug` and Claude moves into it.
-- **Interview.** 2-4 rounds of multiple-choice questions grounded in your code: problem and goal, in/out of scope, behaviour, edge cases, constraints. The spec is yours: anything Claude proposes that you didn't confirm is marked `[ASSUMED]`, and anything unanswered is `[NEEDS CLARIFICATION: …]`. Approval refuses while either remains.
-- **Critic.** The `spec-critic` agent hunts for vague or untestable ACs, missing failure cases and contradictions, and you answer what matters.
-- Acceptance criteria look like `- **AC1** — When <trigger>, the system shall <observable result>.`
-
-### 2. `/approve spec`
-Typed by you, executed by a hook. `approve.sh` refuses if a section is empty, an AC isn't phrased as an observable "shall", an AC id from an earlier version disappeared, or a marker remains. On success it writes `status: approved`, a sha256 of the body and a fingerprint of the contract sections into the frontmatter, then commits `specs/NNN-slug/` as `docs(NNN-slug): approve spec v1`.
-
-### 3. `/plan-feature`
-Blocked unless the spec is approved. The planner reads the spec and your code, then fills `plan.md`. The check enforces: ≥2 real alternatives as `### A1 — name`, exactly one `(chosen)`, each with Pros and Cons; every AC in `## AC coverage`; no coverage percentage; ≤200 lines (`PLAN_MAX_LINES`). Unlike the spec, the plan is drafted first and **then** you're asked its open questions, each with a recommended default. Your answers are written in as `→ decided: …`, and approval refuses while any question is undecided.
-
-### 4. `/approve plan` → tasks, automatically
-The plan is stamped. Claude then runs the tasker, which writes ordered tasks:
-
-```markdown
-### T001 — Add per-tenant limiter
-- Do: internal/ratelimit/limiter.go, wire into middleware
-- Tests: TestLimiter_AllowsUnderLimit (AC1); TestLimiter_RejectsOverLimit (AC2); TestLimiter_ConcurrentBurst (E3)
-- AC: AC1, AC2
-- Commit: feat(ratelimit): add per-tenant limiter
-- Depends: —
-```
-
-When the tasker finishes, a hook validates the file: every task has Do/Tests/AC/Commit; tests name behaviours and edge cases (anything about "coverage" or a percentage is rejected); every AC is covered; commits are conventional; dependencies point backwards. If it passes, the hook approves it (`approved-by: auto`) and commits. You don't touch it. If it fails three times, it stays a draft and `loop.sh check tasks` shows why; fix it and `/approve tasks`.
-
-**tasks.md never changes after approval.** Progress lives in git (`Task: T001` commit trailers) and in `.agent-loop/<feature>/`. `loop.sh status` shows it.
-
-### 5. `/implement`
-The main session becomes the orchestrator. It holds a **run lock** for its session id, so a hook stops it from editing code or changing git state; agents do the work. `loop.sh` is the state machine: after each step it prints one `ACTION …` line, and the orchestrator does exactly that.
-
-```
-loop.sh next ──▶ ACTION implement T001 ──▶ implementer ──▶ loop.sh log T001 implementer 'DONE T001 a1b2c3'
-                                                             │ post-task checks (script, not the agent's word)
-                                          ACTION review T001 ◀┘   fail → ACTION fix T001 post-task 1/2
-reviewer ──▶ loop.sh log T001 reviewer 'PASS' ──▶ ACTION next      FIX → ACTION fix T001 review 1/2
-                                                                   3rd failure → ACTION stop fix-limit
-```
-
-- **Implementer** (one task, fresh context): reads `loop.sh task T001`, writes the failing tests first, implements the smallest change, runs a correctness pass (error paths, resource lifetimes, concurrency, tenant identity from the server), runs `verify`, does a **mutation check** (breaks each guard on purpose and confirms a test fails), and commits with the trailers `Task:`, `Feature:` and `AC:`. It can't finish until line 1 says `DONE|BLOCKED|NEEDS-HUMAN` *and* the repo matches the claim.
-- **Post-task checks** (`loop.sh`, deterministic): new commits exist and all carry the trailers; the tree is clean; nothing under `.claude/` or `specs/` changed (except `research.md`); no protected file changed; a test file was added or changed if the task names tests; approvals are intact; and `VERIFY_CMD` is green, **run by the script** rather than taken from the agent. Changes to watched files (Makefile, go.mod, lint config…), deleted tests, and new `t.Skip`, `.only` or `nolint` markers are passed to the reviewer as WATCH lines.
-- **Reviewer** (fresh, read-only): judges against `spec.md` + `AGENTS.md`, never against plan or tasks. It checks AC → `file:line` → test mapping, correctness, security, scope in both directions and test quality, addresses every WATCH line, runs `verify`, and answers `PASS`, `FIX` (numbered must-fix findings) or `ESCALATE`. Cosmetic issues are notes, never FIX.
-- **Kinds:** for a **fix**, the first task carries the failing regression test. For a **refactor**, behaviour and existing tests stay unchanged, and modified tests become WATCH lines. A **chore** has no behaviour change.
-- After the last task: a **branch review** against the whole spec, then the report.
-
-### When a run stops
-
-| Stop | What it means | You do |
-|---|---|---|
-| `BLOCKED T003 Q2` | The spec or plan was silent or contradictory, a protected file or unplanned dependency was needed, or verify stayed red. The implementer added `**Q2** (open)` to `research.md`, committed it, and stashed its attempt (`git stash list`). | Answer Q2 in `research.md` (change `(open)` to `(answered)` and write the answer), then `/implement`. Your edit is committed for you, and the run resumes at T003. |
-| `fix-limit T003` | Two fix rounds didn't satisfy the checks or the reviewer. | Read the findings in the report and `.agent-loop/<f>/run.log`. Fix it by hand, or drop it (`git reset --hard <base>` is printed) and `/amend` the task. Then `/implement`. |
-| `escalate T003` | The reviewer found something only you can decide: the spec is wrong or silent, a check was weakened, or an AC conflicts with a hard rule. | `/amend` if the spec must change; otherwise fix and `/implement`. |
-| `pre-task …` | Verify was red on HEAD, the tree was dirty, approvals no longer matched, or a change request is pending. | Fix what it names, then `/implement`. |
-| `contract …` | An agent's output didn't match its contract even after 3 tries, or a step was logged out of order. | `/implement` again; it resumes from the recorded state. |
-| `NEEDS-HUMAN` (not a stop) | A task has a `Manual:` check. Its code is committed and the run continues. | Do the check listed in the report. |
-
-The loop never pushes, merges or approves; those are yours.
-
----
-
-## `/quick` — small change, same discipline
-
-```
-/quick fix the off-by-one in pagination        → fix/013-pagination-off-by-one + specs/013-…/brief.md
-/approve brief                                 → stamped; the build starts immediately
-```
-`brief.md` has Change, ≤5 ACs, Out of scope, Approach, and ≤5 steps each naming its tests. `loop.sh check brief` refuses anything bigger ("too big for /quick — use /spec"), so the size gate is code too. The **quick-builder** implements the whole brief; the same post-task checks and the same reviewer apply (one unit `Q`, ≤2 fix rounds, no branch review). It uses a local branch by default; pass `--worktree` for a worktree. Run `/quick` again on that branch to resume after a stop.
-
----
-
-## When the spec changes midway, or later
-
-What other tools do, from their docs, issue trackers and community threads:
-
-- **GitHub Spec Kit:** either a new spec per change (the first spec acts as the PRD, each later one as a change request), or edit the spec and re-run `/plan` and `/tasks`, which overwrites them. Community extensions add *reconcile* (fold code drift back into the spec and append remediation tasks), *archive* (merge a finished feature's delta into a living project spec), and a *lifecycle* lock (freeze specs after finalization; only refine or bugfix).
-- **Kiro:** selective regeneration. Change a task and only tasks regenerate; change the design and design plus tasks rebuild; change scope and everything reruns from requirements. "Sync/Update tasks" maps new requirements to new tasks and marks finished ones. Users reported updates reformatting the task list and overwriting whole requirement files, and asked for the agent to *prompt* for a spec update instead of "fixing" code that no longer matches.
-- **BMAD:** a *correct-course* workflow assesses impact (stories to modify, create or cancel; artifact conflicts) and produces a change proposal before re-planning. A reported bug: it rewrote the acceptance criteria of already-completed stories in place, losing the record of what was built.
-- **OpenSpec:** every change is a proposal with spec deltas (ADDED/MODIFIED/REMOVED), merged into the main spec when archived.
-- **SPECLAN:** approved specs are locked. Changes go through change requests with their own review; on approval the spec is updated in place and the CR archived.
-
-This kit combines those lessons and makes each one a check:
-
-| When | What you do | What happens deterministically |
-|---|---|---|
-| **Before approval** | Keep talking to `/spec` (or `/quick`), or edit the file. | Nothing to manage: it's a draft. |
-| **After approval, before merge** (mid-build or between tasks) | `/amend <what changed>`; review the change request; `/approve change`. | 1. `loop.sh cr-new` scaffolds `specs/<f>/changes/CR-001.md`. 2. The **impact-analyst** fills it: the exact AC **delta** (`ADDED`/`MODIFIED`/`REMOVED`), the done tasks and commits it hits (from the `AC:` trailers via `loop.sh impact`), and the **scope**, meaning the most upstream artifact that must change (spec, plan or tasks). `check change` rejects a delta that references unknown ACs, reuses an id, or omits an impacted done task. 3. While a CR is a draft, `/implement` refuses to run. 4. `/approve change` reopens only that artifact (version +1, `previous:` set to its approval commit, changelog line). 5. Claude applies the delta. Re-approving checks it was applied *exactly*: added ACs present, modified text changed, removed ACs **struck through, never deleted**. 6. **Cascade:** if the spec's contract sections changed, the plan and tasks reopen; if only the problem wording changed, they stay valid. 7. In amend mode the planner changes only what the CR requires. The tasker must copy every **done** task byte for byte (compared with the previous approved version), add rework tasks (`AC: AC2 (rework)`) or removal tasks (`AC: AC4 (remove)`), and number new tasks after the old ones. 8. `/implement` resumes at the first open task. |
-| **Code drifted from the spec** (hand edits, a hotfix) | `/amend --reconcile` | The impact-analyst compares the code with every AC and proposes, per divergence, either a spec update (code is right) or remediation tasks (spec is right). You decide with `/approve change`. |
-| **After merge** | `/spec --supersedes 012 <the change>` | Merged specs are history and stay untouched: `/amend` refuses once `specs/012-…` exists on the base branch. The new spec records `supersedes: 012-…`, and its ACs say which old ACs they replace. `loop.sh lineage` prints the chain. |
-| **Manual escape hatch** | `.claude/scripts/approve.sh reopen spec --reason "…"` (terminal) | Reopens and commits, with the reason in the changelog. Use it when you edited an approved file by hand and want to keep that edit. |
-
-**Other agents you could add later** (not included, each with a clear trigger):
-
-| Agent | Run it | What it does |
-|---|---|---|
-| drift-detector | nightly, or after merges to main (as a scheduled task) | For every merged spec, checks each AC still has a passing test and the code path still exists; opens a reconcile CR when not. |
-| archivist / living-spec keeper | after a merge | Folds the feature's ACs into one current system spec under `docs/` (what Spec Kit's *archive* and OpenSpec's *archive* do), so "what does the system do now" doesn't require reading a chain of specs. |
-| retrospective | after a merge | Compares spec v1 with what shipped (CRs, fix rounds, ESCALATEs, blocked questions) and records lessons for the next spec. |
-| consistency analyzer | before approving the plan | A semantic spec↔plan↔tasks cross-check (Spec Kit's `/analyze`). The scripts already do the structural part. |
-| security reviewer | in the branch review, for auth/tenant/payment features | A second read-only reviewer focused only on auth, tenancy, injection and secrets. |
-
----
-
-## What is enforced, and how
-
-| Rule | Mechanism |
+| You type | What happens |
 |---|---|
-| Only you approve | `approve.sh` runs only from the `/approve` **UserPromptExpansion hook** (it fires only for commands you type) or from your terminal. guard.sh and a permission deny rule block it for Claude, and the skills set `disable-model-invocation`. |
-| Approved files are frozen | guard.sh denies edits. Independently, "approved" is only trusted if the body's sha256 matches **and** the last commit touching the file is an approval commit. Any change by any route shows up as `tampered:…`, and every gate stops. |
-| Agents stop at their gate | `/plan-feature`, `/implement` and `/amend` are blocked by a hook gate before Claude sees them, and checked again by the skill's own `!` gate. guard.sh denies the planner writing `plan.md` without an approved spec, and the tasker writing `tasks.md` without an approved plan. |
-| Agents report in a fixed format | The **SubagentStop** hook blocks an agent from finishing until line 1 matches its contract and the repo matches the claim. After 3 blocked attempts it lets the agent go, logs the failure, and `loop.sh` stops the run on the next step. |
-| "Done" is proven, not claimed | post-task checks plus `VERIFY_CMD` run by `loop.sh`. |
-| Fix rounds are limited | `loop.sh` counts them (`MAX_FIX_ROUNDS`) and stops at the third failure. |
-| The orchestrator doesn't code | A session-scoped run lock; guard.sh denies its edits and git writes while the lock is held. |
-| The reviewer can't change anything | guard.sh allows it no edits and only single, allow-listed read commands (no `;`, `|`, `>`, `$(…)`, `-exec`, `--output`). |
-| Implementers can't cut corners | guard.sh blocks push, reset, checkout, rebase, merge, tag, `git add -A`/`.`, `--no-verify`, edits to `.claude/` and `PROTECTED_GLOBS`, and `rm -rf` of the repo. Commits must use `git commit -F .agent-loop/commit-msg`. |
-| Secrets stay unread | Permission deny rules for `.env*`, `*.pem`, `*.key`, `id_*`. |
-| History is never rewritten | Done tasks are byte-compared on amend; AC ids are never deleted; merged specs can't be amended. |
+| `/spec <requirement> [--here\|--worktree] [--supersedes NNN]` | Creates `<kind>/NNN-slug` (or uses the current branch with `--here`) and `specs/NNN-slug/`, interviews you, drafts `spec.md`. Run it again on the branch to keep refining the draft. |
+| `/quick <small change> [--here\|--worktree]` | One `brief.md` (≤5 ACs, ≤5 steps) instead of spec/plan/tasks. `/approve brief` builds it right away. |
+| `/approve [spec\|plan\|tasks\|brief\|change]` | Validates and stamps the artifact — **only from your keystroke** (a hook runs `approve.sh`; Claude can't). `/approve plan` also approves a valid tasks.md. No argument = whatever is waiting. |
+| `/plan` | The planner drafts `plan.md` **and** `tasks.md` (approach, real alternatives, design, AC coverage, test strategy; tasks with size and risk), then asks you its open questions. `/plan-feature` is an alias. |
+| `/implement [flags]` | Builds the approved tasks. Flags apply to this run only — see [Profiles and overrides](#profiles-and-overrides). |
+| `/status [--config]` | Where the feature stands and the next step; `--config` adds every setting and where it came from. |
+| `/change [spec\|plan\|tasks] <what> [--adopt] [--reconcile]` | Change approved work. Nothing built yet → the artifact reopens and Claude edits it. Something built → a change request with its impact on done tasks, for you to `/approve change`. `--adopt` turns your own edit of the spec into that change request. `/amend` is an alias. |
+| `/fix <bug>` | Unmerged feature → adds `Tnnn — fix: <bug>` to tasks.md and builds it now. Merged (or no feature) → starts a `/quick` fix on `fix/NNN-…`. If the "bug" is what the spec asks for, Claude says so and suggests `/change`. |
+| `/answer <Qn> <text>` | Answers the question a build stopped on; the blocked task gets its stashed attempt back. Then `/resume`. |
+| `/pause [now]` | Pauses this session's build: after the current task, or (`now`) with agents stopped at their next tool call. See [Pause and resume](#pause-and-resume). |
+| `/resume [flags]` | Continues a paused, interrupted or stopped build — from any session. Same as `/implement`. |
 
-**How it was tested.** The scripts ran under bash 5.2 with mawk, a strict POSIX awk, and are written for bash 3.2 and BSD tools, but **macOS itself is untested**: run `selftest.sh`. The whole flow also ran for real in Claude Code 2.1.287 with all agents forced to haiku: `/approve` refusing and approving through the hook; `/plan-feature` blocked by its gate; a real planner, then a real tasker whose tasks were auto-approved; `/implement` with a real implementer, reviewer and branch review; then `/amend` → `/approve change` → `/approve spec` (plan and tasks reopened) → amend-mode plan and tasks (T001 kept byte-identical, rework task T002 added) → `/implement` to PASS. In those runs the stop hook sent back chatty final messages from the planner, implementer and reviewer until line 1 met its contract, and the guard turned a chained `git add && git commit -m "$(…)"` into the allowed `-F` form.
+Questions the build needs from you while you're there (a task BLOCKED on a question, a reviewer's ESCALATE, leftover work after an interruption) come as **question cards** in the chat. The build only stops when nobody can answer.
 
-**Honest limits.** The guard reads command text, so a determined process (say, a Python script that writes files) could slip past it. That's why approvals are also proven by hash and git history at every gate: tampering can't be hidden, only detected. For OS-level isolation, turn on Claude Code's sandbox (`/sandbox`). Hooks need `jq`, workspace trust and a recent Claude Code; without `jq` the guard denies everything on purpose (fail closed). Tasks run one at a time.
+From a terminal, `.claude/scripts/loop.sh status | config | pause [--now] | report | impact AC2` work at any time.
+
+---
+
+## Profiles and overrides
+
+Every speed/cost knob is a setting. For each task, the first layer that sets it wins:
+
+| # | Layer | Where | Example |
+|---|---|---|---|
+| 1 | **run** | `/implement` flags (this run only) | `/implement --review none --model T004=opus` |
+| 2 | **task** | fields in the task block | `- Model: haiku`, `- Review: always`, `- Verify: full` |
+| 3 | **feature** | `plan.md` frontmatter (`brief.md` for /quick), lower-kebab keys | `review: none`, `fix-rounds: 1` |
+| 4 | **repo** | `.claude/loop.conf` | `REVIEW="every"` |
+| 5 | **profile** | `PROFILE` in any layer above, else `balanced` | `PROFILE="fast"` |
+| 6 | kit default | | |
+
+`.claude/scripts/loop.sh config [T002]` (or `/status --config`) prints every key's value **and where it came from**, e.g. `MODEL=haiku (task)`, `REVIEW=risk (profile:balanced)`.
+
+| Key | Values | fast | balanced | strict |
+|---|---|---|---|---|
+| `REVIEW` | `none` `branch` `risk` `every` | `branch` | `risk` | `every` |
+| `VERIFY` | `targeted` `task` `every-N` `end` `off` | `every-3` | `task` | `task` |
+| `FIX_ROUNDS` | 0–3 | 1 | 2 | 2 |
+| `MUTATION` | `off` `risk` `every` | `off` | `risk` | `every` |
+| `CRITIC` (spec critique) | `off` `self` `agent` | `off` | `self` | `agent` |
+| `MODEL_PLANNER` | `haiku` `sonnet` `opus` | sonnet | opus | opus |
+| `MODEL_IMPLEMENTER` | 〃 | sonnet | sonnet | sonnet |
+| `MODEL_REVIEWER` (task reviews) | 〃 | sonnet | sonnet | opus |
+| `MODEL_BRANCH_REVIEWER` | 〃 | sonnet | opus | opus |
+| `MODEL_QUICK` | 〃 | sonnet | sonnet | sonnet |
+| `MODEL_IMPACT` | 〃 | sonnet | sonnet | sonnet |
+| `SIZE_MODELS` | `S=… M=… L=…` | `S=haiku M=sonnet L=sonnet` | `S=haiku M=sonnet L=opus` | `S=sonnet M=sonnet L=opus` |
+| `AUTO_APPROVE_TASKS` | `on` `off` | on | on | off |
+| `TRAILERS` | `on` `off` | on | on | on |
+| `REVIEW_LINES` (risk trigger) | number | 300 | 150 | — |
+| `REVIEW_GLOBS` (risk trigger) | globs | `""` | `WATCHED_GLOBS` | — |
+| `PLAN_MAX_LINES` (warning only) | number | 200 | 200 | 200 |
+
+The implementer's model for a task: run `--model T002=…` > the task's `Model:` > `SIZE_MODELS[Size]` (when the task has `Size:`) > `MODEL_IMPLEMENTER`. Every `ACTION implement|review|fix` line carries the resolved `model=…`, and the orchestrator passes it to the Agent tool.
+
+**What the knobs do**
+- **`VERIFY`** — the script runs `VERIFY_CMD`, never an agent. `task`: after every task. `every-N`: after every Nth task. `targeted` / `end`: once, before the branch review. `off`: never (the report warns). Whenever the branch isn't proven green before the branch review, it runs then; red sends the last task back for a fix. Implementers only run the tests their task touches; reviewers never run verify.
+- **`REVIEW`** — `none`: no reviewer at all (implement + tests + script verify). `branch`: no task reviews, one branch review. `risk`: a task gets a reviewer only if it says `Risk: high` or `Review: always`, changes more than `REVIEW_LINES` lines, touches a watched file (Makefile, lint config, package.json…), deleted a test or added a skip, or touches `REVIEW_GLOBS`. `every`: every task. `Review: skip` on a task skips it under `risk` and `every`. The branch review runs unless `REVIEW=none`; a /quick change is reviewed once unless `REVIEW=none`. The reason ("reviewed: changed package.json", "skipped: low risk (20 changed lines…)") goes to the run log and the report.
+- **`MUTATION`** — the implementer breaks each guard its tests claim to cover and checks a test fails. `risk`: only for `Risk: high` tasks. The task's context pack says which.
+- **`CRITIC`** — `self`: `/spec` runs the critic's checklist itself; `agent`: the spec-critic agent; `off`: skipped.
+- **`FIX_ROUNDS`** — fix rounds go back to the **same** implementer (it keeps its context); a new one only if it can't be reached.
+
+**Flags:** `/implement --profile fast|balanced|strict --review … --verify … --fix-rounds N --mutation … --model T002=haiku,T004=opus,implementer=sonnet,reviewer=opus,branch-reviewer=…`. A wrong flag or value is refused before anything runs, with the valid values. A resumed run keeps its flags unless you give new ones.
+
+---
+
+## Every scenario
+
+| Situation | You do | What happens |
+|---|---|---|
+| **Start** a feature | `/spec <requirement>` | Question card: new branch (default), this branch, or a worktree; kind; name. Then 2-4 rounds of questions, the critic pass (per `CRITIC`), and `spec.md`. Only Goal and Acceptance criteria are required; any other section, yours included, is kept. |
+| | `/quick <change>` | A brief instead; too big (>5 ACs or steps) → it says use `/spec`. |
+| **Spec** ready | `/approve spec` | Checks (ACs as observable "shall" behaviour, unique ids, no `[ASSUMED]` / `[NEEDS CLARIFICATION]`), stamps, commits. |
+| Fix a typo in an approved spec | just edit it (and commit) | Nothing to approve: only the contract sections (Goal, Non-goals, ACs, Edge cases, Constraints — `CONTRACT_SECTIONS`) count. |
+| Changed an AC by hand | `/change --adopt` (or undo: `git checkout <sha> -- spec.md`) | `/implement` and `/status` name the change ("AC2 changed since you approved spec.md") and print both ways out. |
+| **Plan** | `/plan`, answer its questions | plan.md + tasks.md; `/approve plan` approves both (tasks too when `AUTO_APPROVE_TASKS=on` and they pass the checks; otherwise they stay a draft and it says what to fix). |
+| Reorder / split / retitle tasks not started yet | edit tasks.md | No re-approval (with `AUTO_APPROVE_TASKS=on`); the next `/implement` re-checks it. Done tasks are frozen; new ids come after the highest one. With `off`: `/approve tasks`. |
+| **Build** | `/implement [flags]` | Per task: implementer (targeted tests, commit) → script checks + verify per policy → reviewer if policy says → fix rounds → next. Then the branch review and a report. |
+| A task needs an answer | answer the card | The implementer recorded `Qn` in research.md and stashed its attempt; your answer is written in and committed, the attempt comes back, the same task continues. Away? `/answer Qn <text>`, then `/resume`. |
+| The reviewer escalates | pick on the card | *Change the spec* (build pauses; `/change …`), *I'll fix the code* (build pauses; fix, `/resume` — the task is reviewed again), *Accept as is* (the task passes and the accepted risk goes in the report). |
+| Fix rounds used up | fix by hand, or drop it | The report shows the attempt and its base; fix it and `/resume`, or `git reset --hard <base>`, edit the task, `/resume`. |
+| **Change** something approved | `/change <what>` | Nothing built yet → reopened and edited, then `/approve …`. Built → change request (AC delta, impacted done tasks, what reopens) → `/approve change` → reopened artifacts are revised; done tasks stay byte-identical and rework becomes new tasks. |
+| Code drifted from the spec | `/change --reconcile` | The impact-analyst proposes, per divergence, a spec update or remediation tasks. |
+| **Bug** | `/fix <bug>` | See [Commands](#commands). |
+| **Pause** | type anything, Esc, `/pause`, or `loop.sh pause` | See below. |
+| Your own commits mid-feature | commit as usual | Fine between tasks and while paused: the next task starts from HEAD and checks only its own commits. |
+| **Ship** | read the report, open the PR | The loop never pushes, merges or approves. |
+| After merge | `/spec --supersedes NNN <change>` | Merged specs are history; the new spec records what it replaces (`loop.sh lineage`). |
+| Housekeeping | `/status`, `loop.sh report`, `loop.sh impact AC2`, `loop.sh doctor` | |
+
+### Pause and resume
+
+| Path | Effect |
+|---|---|
+| **Type any message** while a build runs | The build pauses (a hook does it): the current task finishes, then the loop stops and Claude does what you asked. `pause now` as the message also stops the agents. Claude Code delivers your message at the orchestrator's next tool boundary — usually when the current agent returns. |
+| **Esc** | Claude Code's own interrupt, immediate. The next message or kit command treats the build as paused; nothing to unlock. |
+| `/pause` / `/pause now` | The same as a message, when typed between turns (see [Honest limits](#honest-limits)). |
+| `.claude/scripts/loop.sh pause [--now]` | From another terminal, at any moment. `--now`: every kit agent's next tool call is denied with "agent-loop is paused", so they end within one call; their uncommitted work stays. |
+| `/resume` | Takes the build over (any session) and handles what it finds: a task boundary → next task; a task implemented but not reviewed → reviewed if policy says; a task that committed before the pause → checked as if it had reported DONE; uncommitted work from an interrupted task → a card: **Continue** (an implementer finishes that diff), **Discard** (stashed as `Tn discarded on resume`, the task starts over), **Keep as my change**; your commits while paused → accepted; contract edits while paused → named, as above. |
+
+---
+
+## What is enforced, and when
+
+Enforcement is **opt-in**: nothing constrains the main session unless it is running a kit build. Kit agents are always constrained. Approvals are always yours.
+
+| Rule | When | Mechanism |
+|---|---|---|
+| Only you approve | always | `approve.sh` runs only from the `/approve` (or `/change` reopen) **UserPromptExpansion hook** — it fires only for commands you type — or from your terminal. guard.sh and a `Bash(*approve.sh*)` deny rule block it for Claude and every agent; Claude can't write `status: approved` or the approval stamps into `specs/`, nor commit an `approve` subject. |
+| An approval means what it says | always | An artifact is approved only if the **latest approval commit** for it recorded a contract fingerprint equal to the file's **current** one. The record is in the commit body, so hand-edited frontmatter can't validate itself. |
+| The main session is free | outside a build | You, Claude and your other agents (Explore, general-purpose, your own) can edit code, specs and the kit itself. |
+| The orchestrator only orchestrates | during a build, in that session | A run flag (`.agent-loop/<f>/lock` = its session id): guard.sh denies its code edits, git writes and file-writing shell commands; it may call `loop.sh`. Typing a message releases it (the build pauses). |
+| Kit agents stay in their lane | always | implementer / quick-builder: code anywhere except `specs/` (bar research.md), `.claude/` and `PROTECTED_GLOBS`; git only in the exact shapes a task commit needs (no push, reset, checkout, rebase, `add -A`, `--no-verify`); commits via `git commit -F .agent-loop/commit-msg`; no full verify (the script owns it). reviewer / spec-critic: read-only, single allow-listed commands. planner: plan.md and tasks.md, only once the spec is approved. impact-analyst: the change request. None of them reads `.env*`, `*.pem`, `*.key`, `id_*`. |
+| Agents report in a fixed format | always | The **SubagentStop** hook blocks an agent until line 1 matches its contract and the repo matches the claim (3 tries, then the run stops). |
+| "Done" is proven, not claimed | during a build | Post-task checks (commits, trailers, clean tree, no kit/spec/protected changes, tests touched, approvals valid) and `VERIFY_CMD`, run by `loop.sh`. |
+| Fix rounds are limited | during a build | `loop.sh` counts them (`FIX_ROUNDS`). |
+| History isn't rewritten | always | Done task blocks are compared byte for byte; AC ids are struck, never deleted; merged specs can't be changed. |
+
+---
+
+## Honest limits
+
+- **The spec is the ceiling.** Reviewers judge against the approved spec. A spec that is wrong or silent gets built faithfully; the interview, the critic and ESCALATE reduce that, they don't remove it.
+- **The guard reads command text.** A determined process (a script that writes files, or a commit with a hand-made `approve` subject and record) could slip past it. Approval records make tampering *visible* at every gate, not impossible. For OS-level isolation, use Claude Code's sandbox (`/sandbox`). Outside a build the main session is deliberately unguarded.
+- **`/pause` can't interrupt a running build turn** (checked on 2.1.289: a slash command typed mid-turn runs only after the turn ends, and the whole build is one turn). A *plain* message does reach the build mid-turn — at the orchestrator's next tool boundary, i.e. after the current agent returns. Esc and `loop.sh pause --now` are the immediate paths. A graceful pause releases the run flag at once, so the orchestrator is unguarded while it finishes the current task.
+- **Prompts that Claude Code itself generates** (background-agent `<task-notification>`s, command output) also reach the prompt hook, with no field saying so; the hook recognises them by their opening tag. A new kind of generated prompt could pause a build until the hook learns it.
+- **`/plan`, `/status` and `/resume` are also Claude Code built-ins.** In a repo with the kit, the kit's commands win (checked in the 2.1.289 TUI and in headless mode), so the built-ins are hidden there: use Shift+Tab for plan mode, `claude --resume` or `/continue` to resume a conversation, `/config` for Claude Code's own status.
+- **Models per dispatch, effort per agent file.** The Agent tool's `model` overrides an agent's frontmatter (checked), so models are per run/task/feature. Reasoning effort can only be set in an agent's frontmatter (`effort: low|medium|high|xhigh|max`, checked), not per dispatch — so there are no `EFFORT_*` settings.
+- **`REVIEW=risk` trusts its triggers.** A low-risk task that is subtly wrong is only seen by the branch review (or by nobody with `REVIEW=none`). Mark tasks `Risk: high` generously.
+- **`TRAILERS=off`** keeps the task ↔ commit map only in local state (`.agent-loop/<f>/commits`); a fresh clone can't rebuild it.
+- **Squash merges** flatten the task commits and their trailers on the base branch; `impact` and per-task history are only on the feature branch (approvals and specs survive in `specs/`).
+- **`BATCH_SMALL`** (one implementer for several small tasks) is reserved, not built.
+- Tasks run one at a time. Hooks need `jq`, workspace trust and a recent Claude Code; without `jq` the guard denies everything on purpose.
+
+---
+
+## Requirements and platforms
+
+| Need | Why | Without it |
+|---|---|---|
+| **Claude Code** with `UserPromptExpansion`, `UserPromptSubmit`, `SubagentStop` and `agent_type` in hook input | `/approve` and the gate hooks, auto-pause, the agent output contracts, per-agent guard rules | Tested on **2.1.289**. On older versions hooks may silently not fire; `/approve` then tells you to use the terminal. |
+| **bash** | All scripts | Written for bash 3.2+ (macOS default); tested on bash 5.2 |
+| **git** ≥ 2.23 | `git switch`, worktrees, trailers | — |
+| **jq** | Every hook parses its JSON input with it | The guard **denies every call** (fails closed on purpose) |
+| **sha256sum** or **shasum** | Approval fingerprints | Approvals can't be stamped or checked |
+| **POSIX awk, sed, grep** | Parsing specs and tasks | Standard on Linux and macOS |
+| Workspace trust | Project allow rules and hooks apply | Prompts for every `loop.sh` call; hooks may be skipped |
+| **python3** + **make** | Only `selftest.sh` | The kit itself doesn't need them |
+
+| Platform | Status |
+|---|---|
+| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils) | **Tested.** `selftest.sh` passes 353/353 checks. Real headless runs in Claude Code 2.1.289 with every agent on haiku: `/quick` → `/approve brief` → build; `/spec` → `/approve spec` → `/plan` → `/approve plan` (one commit for plan + tasks) → `/implement --profile fast --model T001=haiku`; `/change` on a built feature → change request → `/approve change` → spec, plan and tasks revised with the done task untouched → build; a build paused mid-task and `/resume`d. |
+| macOS (bash 3.2, BSD tools) | **Not tested.** The scripts avoid bash-4 features and GNU-only flags, and pass under mawk. Run `./selftest.sh` once. |
+| Windows | Not supported natively. Use WSL. |
+| Claude Code desktop / IDE / cloud | **Not tested.** Same hooks and settings; only the CLI was exercised. |
+| Agents on sonnet/opus | **Not tested end to end in v0.2** (the real runs used haiku for cost). |
+
+`./selftest.sh` exercises every gate, check and hook in a throwaway repo with simulated agents and no model calls. It takes about a minute and a half and should print `all 353 checks passed`.
+
+`install.sh` is idempotent (re-run it to upgrade). It copies `.claude/{agents,skills,hooks,scripts,templates}`, keeps an existing `loop.conf` (a pre-v0.2 one gets a `loop.conf.v0.2` next to it), **merges** `.claude/settings.json` — your keys and rules stay, the kit's hook entries are replaced rather than duplicated, and the deny rules v0.1 added (edits of the kit, secret reads) are removed — and gitignores `.agent-loop/`, `.claude/worktrees/` and its backup folders. Anything it overwrites goes to `.claude/agent-loop-backup-<timestamp>/`. Your own templates go in `.claude/templates.local/<name>.md`.
 
 ---
 
@@ -223,68 +208,67 @@ This kit combines those lessons and makes each one a check:
 
 ```
 .claude/
-  agents/      spec-critic · planner · tasker · implementer · quick-builder · reviewer · impact-analyst
-  skills/      spec · plan-feature · approve · implement (+ LOOP.md, the orchestrator procedure) · quick · amend
-  hooks/       guard.sh (PreToolUse) · on-command.sh (UserPromptExpansion) · on-agent-stop.sh (SubagentStop)
-  scripts/     loop.sh (state machine) · approve.sh (human-only) · validate.sh · lib.sh
-  templates/   spec · plan · tasks · brief · research · cr
+  agents/      planner · implementer · quick-builder · reviewer · impact-analyst · spec-critic
+  skills/      spec · quick · approve · plan (+ plan-feature) · implement (+ LOOP.md) · status · change (+ amend)
+               fix · answer · pause · resume
+  hooks/       guard.sh (PreToolUse) · on-command.sh (UserPromptExpansion) · on-prompt.sh (UserPromptSubmit)
+               on-agent-stop.sh (SubagentStop)
+  scripts/     loop.sh (state machine) · approve.sh (yours only) · validate.sh · lib.sh
+  templates/   spec · plan · tasks · brief · research · cr      (templates.local/ overrides them)
   loop.conf    your settings
   settings.json
-install.sh · selftest.sh · README.md       (kit root, not copied into your repo)
+install.sh · selftest.sh · README.md · CHANGELOG.md    (kit root, not copied into your repo)
 specs/NNN-slug/        spec.md | brief.md, plan.md, tasks.md, research.md, changes/CR-nnn.md   (committed)
-.agent-loop/NNN-slug/  run.log, state, verify.log, per-task base/rounds/findings              (gitignored)
+.agent-loop/NNN-slug/  run.log, state, run.conf, verify.log, commits, per-task base/rounds/findings (gitignored)
 ```
 
-| Agent | Model | Tools | Writes |
-|---|---|---|---|
-| spec-critic | sonnet | Read, Grep, Glob | nothing |
-| planner | opus | + Bash (read-only), Write, Edit | plan.md, research.md |
-| tasker | sonnet | same | tasks.md, research.md |
-| implementer | inherit | Read, Edit, Write, Bash, Grep, Glob | code, tests, research.md |
-| quick-builder | sonnet | same | code, tests, research.md |
-| reviewer | opus | Read, Grep, Glob, Bash (read-only) | nothing |
-| impact-analyst | opus | + Bash (read-only), Write, Edit | changes/CR-nnn.md, research.md |
+| Agent | Model (per settings) | Writes |
+|---|---|---|
+| spec-critic | frontmatter (sonnet) | nothing |
+| planner | `MODEL_PLANNER` | plan.md, tasks.md, research.md |
+| implementer | per task (see above) | code, tests, research.md |
+| quick-builder | `MODEL_QUICK` | code, tests, research.md |
+| reviewer | `MODEL_REVIEWER` / `MODEL_BRANCH_REVIEWER` | nothing |
+| impact-analyst | `MODEL_IMPACT` | changes/CR-nnn.md, research.md |
 
 ## `loop.sh` reference
 
 | Command | Use |
 |---|---|
 | `status [feature]` | Where things stand and the next step |
+| `config [TASK]`, `cfg KEY` | Effective settings and their source |
+| `pause [--now]` | Pause the build from any terminal |
 | `check spec\|plan\|tasks\|brief [--draft]`, `check change [CR-nnn]` | The exact checks approval runs |
 | `report` | The last run's report |
 | `impact AC2 AC4` | Tasks and commits that implement those ACs |
 | `lineage` | supersedes chain |
 | `verify`, `test <args>` | Run `VERIFY_CMD` / `TEST_CMD` |
-| `doctor` | Setup check |
-| `suggest-verify` | Guess a `VERIFY_CMD` from the repo root: a Makefile `verify:` target wins; otherwise `package.json` scripts (`typecheck`, `lint`, `build`, `test`, with the package manager from the lockfile), `go.mod`, `Cargo.toml`, `pyproject.toml`/`setup.py`, joined with `&&`. A guess only: read it before you paste it. |
-| `unlock` | Release a run lock left by a crashed session |
-| `new`, `gate`, `start`, `next`, `log`, `stop`, `finish`, `task`, `review-info`, `findings`, `post-check`, `cr-new`, `resolve` | Used by the skills and agents |
+| `doctor`, `suggest-verify` | Setup check; a `VERIFY_CMD` guess |
+| `task <ID>` | A task's context pack (what agents start from) |
+| `new`, `gate`, `start`, `next`, `log`, `stop`, `finish`, `answer`, `accept`, `dirty`, `add-fix`, `cr-new`, `findings`, `review-info`, `post-check`, `resolve` | Used by the skills, hooks and agents |
 
 ## Configuration (`.claude/loop.conf`)
 
+Besides the [profile keys](#profiles-and-overrides):
+
 | Key | Default | Meaning |
 |---|---|---|
-| `VERIFY_CMD` | empty (**required**) | Tests + lint + build; exit 0 = green. Must not modify files. Empty = `/implement` refuses to start, `doctor` fails and `loop.sh verify` is red, never a silent pass. |
+| `PROFILE` | `balanced` | The defaults for every profile key |
+| `VERIFY_CMD` | empty (**required**) | Tests + lint + build; exit 0 = green. Must not modify files. Empty = `/implement` refuses, `doctor` fails, `loop.sh verify` is red. |
 | `TEST_CMD` | empty | Lets agents run a subset: `loop.sh test ./pkg -run TestX` |
 | `BASE_BRANCH` | auto | origin/HEAD, then main, master, trunk, develop |
-| `MAX_FIX_ROUNDS` | 2 | Per task |
-| `PLAN_MAX_LINES` | 200 | "Not verbose", made concrete |
+| `CONTRACT_SECTIONS` | `Goal\|Non-goals\|Acceptance criteria\|Edge cases\|Constraints` | Spec sections an approval covers |
 | `QUICK_MAX_ACS` / `QUICK_MAX_STEPS` | 5 / 5 | Size gate for `/quick` |
 | `PROTECTED_GLOBS` | `.githooks/* .github/workflows/*` | No agent may change these |
-| `WATCHED_GLOBS` | Makefile, go.mod, package.json, lint configs… | Allowed, but every change is shown to the reviewer |
+| `WATCHED_GLOBS` | Makefile, go.mod, package.json, lint configs… | Allowed, but every change is shown to the reviewer (and triggers a review under `REVIEW=risk`) |
 | `TEST_GLOBS` | `*_test.go *.test.* *.spec.* test_*.py tests/* …` | What counts as a test file |
-| `READONLY_EXTRA_CMDS` | empty | Extra read-only commands for the read-only agents, e.g. `go list\|go vet` |
+| `READONLY_EXTRA_CMDS` | empty | Extra read-only commands for read-only agents, e.g. `go list\|go vet` |
 
 ## Troubleshooting
 
 - **"guard needs jq"**: install jq. The guard fails closed on purpose.
-- **`/approve` says "no approve.sh output"**: the hook didn't run (folder not trusted, or hooks disabled). Run `.claude/scripts/approve.sh spec` in a terminal, then check `/hooks`.
-- **Why was something denied?** Start Claude with `AGENT_LOOP_DEBUG=1 claude`; every hook input is appended to `.agent-loop/hook-debug.log`.
-- **Claude asks before editing spec.md / brief.md** (e.g. when applying a change request): that's your normal edit permission. Approve it, or run with `acceptEdits`. The agents set their own `permissionMode`.
+- **`/approve` says the hook didn't run**: the folder isn't trusted or hooks are off. Run `.claude/scripts/approve.sh spec` in a terminal, then check `/hooks`.
+- **Why was something denied, or why did the build pause?** Start Claude with `AGENT_LOOP_DEBUG=1 claude`; every hook input is appended to `.agent-loop/hook-debug.log`, and `.agent-loop/<f>/run.log` has the build's story.
 - **Agents keep asking permission for build commands**: add them to `.claude/settings.local.json` `permissions.allow`, e.g. `"Bash(go test *)"`, `"Bash(npm run *)"`.
-- **A run lock blocks your normal edits** (a crashed `/implement`): `.claude/scripts/loop.sh unlock`.
-- **Rebased the feature branch?** Approvals survive (they're matched by commit message and hash). A stopped task restarts from the new HEAD.
-
-## Coming from `/run-feature`
-
-`install.sh` moves `run-feature.md`, `agent-bash-guard.sh` and your old `implementer.md`/`reviewer.md` into the backup folder. What carried over: approvals the agents can't fake, a reviewer that judges only against the spec, ≤2 fix rounds, BLOCKED questions in `research.md` with a stashed attempt, NEEDS-HUMAN, a run log, and a branch review. What's new: the hash-locked approvals, hook-enforced output contracts, script-run verify, mutation checks, the correctness and security review, `/quick`, and change requests. Finish features already in flight with the old command from the backup folder, or start them again with `/spec`. The old `tasks.md` format doesn't pass the new checks.
+- **A crashed session left a build "running"**: type anything in a session, or `/resume`; `loop.sh unlock` is the last-resort escape hatch.
+- **Rebased the feature branch?** Approvals survive (they're found by commit message and fingerprint). A stopped task restarts from the new HEAD.

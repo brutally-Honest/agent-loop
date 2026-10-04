@@ -7,14 +7,18 @@
 #
 # Usage: .claude/scripts/loop.sh <command> [args]   (run from the repo root)
 #   status [feature]                  where things stand + the next step
-#   new <kind> <slug> [--worktree] [--quick] [--base REF] [--supersedes NNN]
-#   gate plan|implement|amend         precondition check for a skill (exit 1 = stop)
+#   config [TASK] | cfg KEY           every setting's effective value and where it came from
+#   pause [--now]                     pause this repo's build (from any terminal); /resume continues
+#   verify | test <args>              run VERIFY_CMD / TEST_CMD
+#   impact <ACn...> | lineage | report | doctor | suggest-verify
 #   check spec|plan|tasks|brief [--draft]  |  check change [CR-nnn]
-#   config [TASK]                     every setting's effective value and where it came from
-#   start --session ID [flags] | pause [--now] | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
+# Used by the skills, hooks and agents:
+#   new <kind> <slug> [--here|--worktree] [--quick] [--base REF] [--supersedes NNN]
+#   gate plan|implement|change|fix   precondition check for a skill (exit 1 = stop)
+#   start --session ID [flags] | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
 #   task <ID> | findings <ID> | review-info <ID|BRANCH|Q> | post-check <ID>
-#   answer <Qn> <text> | accept <ID> <reason> | add-fix <bug> | cr-new [--adopt]
-#   verify | test <args> | impact <ACn...> | lineage | report | doctor | suggest-verify | unlock | resolve
+#   answer <Qn> <text> | accept <ID> <reason> | dirty <ID> continue|discard|keep
+#   add-fix <bug> | cr-new [--adopt] | resolve
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh

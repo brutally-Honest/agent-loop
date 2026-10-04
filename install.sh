@@ -40,7 +40,15 @@ for d in agents skills hooks scripts templates; do
 	done
 done
 chmod +x .claude/hooks/*.sh .claude/scripts/*.sh
-if [ -f .claude/loop.conf ]; then echo "  kept your .claude/loop.conf"; else cp "$KIT/.claude/loop.conf" .claude/loop.conf; fi
+if [ -f .claude/loop.conf ]; then
+	echo "  kept your .claude/loop.conf"
+	if ! grep -q '^PROFILE=' .claude/loop.conf; then
+		cp "$KIT/.claude/loop.conf" .claude/loop.conf.v0.2
+		echo "  NOTE your loop.conf predates profiles: keys it sets (e.g. MAX_FIX_ROUNDS, PLAN_MAX_LINES) pin those values"
+		echo "       whatever the profile. The v0.2 file is in .claude/loop.conf.v0.2 — copy your VERIFY_CMD/TEST_CMD/globs into it"
+		echo "       and rename it, or keep yours (loop.sh config shows what applies and why)."
+	fi
+else cp "$KIT/.claude/loop.conf" .claude/loop.conf; fi
 
 # Rules earlier kit versions added and this one dropped (enforcement is opt-in since v0.2).
 # Only these exact strings are removed on upgrade; rules you added yourself always stay.
@@ -88,8 +96,10 @@ cat <<EOF
 Done. Next:
   1. $vline
      (TEST_CMD is optional.) /implement refuses to start while VERIFY_CMD is empty.
-  2. Commit the kit:   git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
-  3. Check the setup:  .claude/scripts/loop.sh doctor
-  4. Start Claude Code from the repo root and accept the workspace-trust prompt (hooks need it).
-  5. /spec <what you want>   or   /quick <small change>
+  2. Pick a profile in .claude/loop.conf: PROFILE="balanced" (default), "fast" or "strict".
+     Every other knob is commented there; .claude/scripts/loop.sh config shows what applies.
+  3. Commit the kit:   git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
+  4. Check the setup:  .claude/scripts/loop.sh doctor
+  5. Start Claude Code from the repo root and accept the workspace-trust prompt (hooks need it).
+  6. /spec <what you want>  or  /quick <small change>  — /status shows where you are at any time.
 EOF
