@@ -562,7 +562,12 @@ bump() { # id source -> prints ACTION
 }
 
 act_implement() { model_for "$1"; echo "ACTION implement $1 model=$CV"; }
-act_review() {
+act_review() { # every reviewer dispatch goes through here; REVIEW=none (from any layer) never reaches the echo
+	if [ "$(cfg REVIEW)" = none ]; then
+		log_event "BUG review of $1 requested while REVIEW=none — skipped"
+		if [ "$1" = Q ]; then echo "ACTION finish"; else echo "ACTION next"; fi
+		return 0
+	fi
 	if [ "$1" = BRANCH ]; then cfg_lookup MODEL_BRANCH_REVIEWER; else cfg_lookup MODEL_REVIEWER; fi
 	echo "ACTION review $1 model=$CV"
 }
@@ -762,6 +767,10 @@ cmd_next() {
 		fi
 		if [ "$(state_get "$id")" = ESCALATED ]; then
 			state_set "$id" IMPLEMENTED "re-review after your decision"
+			if [ "$(cfg REVIEW)" = none ]; then
+				echo "RESUME $id was escalated; reviews are off now (REVIEW=none), so it passes on the script's checks"
+				after_implemented "$id"; return 0
+			fi
 			echo "RESUME $id was escalated — reviewing it again against the spec as it is now"
 			log_event "$id re-review after the escalation"; act_review "$id"; return 0
 		fi
@@ -1256,6 +1265,7 @@ cmd_report() {
 	echo "Report — $F on $(current_branch) ($(now))"
 	if is_quick; then
 		echo "  Q  $(state_get Q) $(state_detail Q)  (fix rounds: $(sfile_get rounds.Q))"
+		[ "$(cfg REVIEW)" = none ] && echo "Reviews: off (REVIEW=none) — no review ran"
 	else
 		echo "Tasks"
 		for id in $(task_ids "$(art tasks)"); do

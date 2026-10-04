@@ -600,6 +600,67 @@ git commit -q --amend -m "docs($FF): approve plan v1 + tasks v1" -m "sha256 $(fm
 out=$($L status); has "old plan approval" "$out" "plan.md   approved v1"; has "old tasks approval" "$out" "tasks.md  approved v1"
 ok $L gate implement
 
+echo "== REVIEW=none means no reviewer anywhere"
+noreview() { # label -> fails if any ACTION review was printed in $out_all
+	case $out_all in *"ACTION review"*) fail=$((fail+1)); echo "FAIL $1: a reviewer was dispatched:"; printf '%s\n' "$out_all" | grep 'ACTION review' | head -3 ;; *) pass=$((pass+1)) ;; esac
+}
+cp .claude/loop.conf "$X/conf.rn"
+# (a) loop.conf: a full feature, a fix round, a resumed IMPLEMENTED task, an escalated task resumed with reviews off
+mkfeat rnconf 3 || exit 1
+printf 'REVIEW="none"\n' >> .claude/loop.conf; git commit -qam "chore: reviews off"
+TX=; out_all=$($L start --session s20; $L next)
+impl T001; out_all="$out_all
+$($L log T001 implementer "DONE T001 x")
+$($L next)"
+RED=1 impl T002; out_all="$out_all
+$($L log T002 implementer "DONE T002 x")"
+printf 'exit 0\n' > "tests/${FN}_T002_test.sh"; git add "tests/${FN}_T002_test.sh" && git commit -q --amend --no-edit
+out_all="$out_all
+$($L log T002 implementer "DONE T002 x")
+$($L next)"
+impl T003; printf 'T003\tIMPLEMENTED\tx\t%s\n' now >> .agent-loop/$FF/state
+out_all="$out_all
+$($L next)"
+printf 'T003\tESCALATED\t\t%s\n' now >> .agent-loop/$FF/state
+out_all="$out_all
+$($L next)
+$($L next)"
+noreview "REVIEW=none in loop.conf: full feature, fix round, resumed and escalated tasks"
+has "…and it finishes" "$out_all" "ACTION finish"
+has "report: reviews off" "$($L finish)" "Reviews: off"
+cp "$X/conf.rn" .claude/loop.conf; git commit -qam "chore: reviews back on"
+
+# (b) /al-implement --review none on a feature whose plan.md says review: every and whose task says Review: always
+TX1="- Review: always" TX2="- Risk: high" mkfeat rnflag 2 "review: every" || exit 1
+out_all=$($L start --session s21 --review none; $L next)
+impl T001; out_all="$out_all
+$($L log T001 implementer "DONE T001 x")
+$($L next)"
+PKG=1 impl T002; out_all="$out_all
+$($L log T002 implementer "DONE T002 x")
+$($L next)"
+noreview "--review none beats plan.md, Review: always and Risk: high"
+has "report: reviews off (run flag)" "$($L finish)" "Reviews: off"
+
+# (c) /al-quick with REVIEW=none, from loop.conf and from the run flag
+for how in conf flag; do
+	git checkout -q main
+	QF=$($L new fix "rn-$how" --quick | awk '$1 == "FEATURE" { print $2 }'); QB=specs/$QF/brief.md
+	set_section $QB Change "c"; set_section $QB Acceptance "- **AC1** — When it runs, the system shall print 0."
+	set_section $QB Steps "- **S1** — t — Tests: rn_test"
+	$A brief >/dev/null
+	if [ $how = conf ]; then printf 'REVIEW="none"\n' >> .claude/loop.conf; git commit -qam "chore: reviews off"; flag=""; else flag="--review none"; fi
+	out_all=$($L start --session s22 $flag; $L next)
+	printf 'exit 0\n' > "tests/rn_${how}_test.sh"; printf 'fix: rn\n\nTask: Q\nFeature: %s\n' "$QF" > .agent-loop/commit-msg
+	git add "tests/rn_${how}_test.sh" && git commit -qF .agent-loop/commit-msg
+	out_all="$out_all
+$($L log Q quick-builder "DONE Q x")"
+	noreview "/al-quick with REVIEW=none ($how)"
+	has "/al-quick finishes ($how)" "$out_all" "ACTION finish"
+	has "report: reviews off ($how)" "$($L finish)" "Reviews: off"
+	cp "$X/conf.rn" .claude/loop.conf; git diff --quiet || git commit -qam "chore: reviews back on"
+done
+
 echo "== profiles"
 git checkout -q main
 cp .claude/loop.conf "$X/conf.p"
