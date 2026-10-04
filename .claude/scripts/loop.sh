@@ -10,7 +10,8 @@
 #   new <kind> <slug> [--worktree] [--quick] [--base REF] [--supersedes NNN]
 #   gate plan|tasks|implement|amend   precondition check for a skill (exit 1 = stop)
 #   check spec|plan|tasks|brief [--draft]  |  check change [CR-nnn]
-#   start --session ID | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
+#   config [TASK]                     every setting's effective value and where it came from
+#   start --session ID [flags] | pause [--now] | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
 #   task <ID> | findings <ID> | review-info <ID|BRANCH|Q> | post-check <ID>
 #   verify | test <args> | impact <ACn...> | cr-new | lineage | report | doctor | suggest-verify | unlock | resolve
 set -uo pipefail
@@ -177,7 +178,8 @@ next_step() {
 	done
 	local nh=""
 	for c in $(task_ids "$(art tasks)"); do [ "$(state_get "$c")" = NEEDS-HUMAN ] && nh="$nh $c"; done
-	case $(state_get BRANCH) in
+	st=$(state_get BRANCH); [ "$(cfg REVIEW)" = none ] && st=PASS
+	case $st in
 		PASS | FIX | ESCALATE) echo "done — read the report (loop.sh report)${nh:+, do the manual checks for$nh}, then open the PR" ;;
 		*) echo "/implement (branch review pending)" ;;
 	esac
@@ -225,6 +227,7 @@ gate_plan() {
 	echo "GATE plan: OK"
 	echo "FEATURE $F"
 	echo "MODE $mode"
+	echo "MODEL $(cfg MODEL_PLANNER)"
 	echo "CHANGE-REQUESTS $(pending_crs | tr '\n' ' ')"
 }
 
@@ -258,7 +261,7 @@ gate_implement() {
 	echo "FEATURE $F"
 	echo "KIND $(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)"
 	echo "VERIFY $VERIFY_CMD"
-	echo "MAX_FIX_ROUNDS $MAX_FIX_ROUNDS"
+	echo "PROFILE $(cfg PROFILE)   REVIEW $(cfg REVIEW)   VERIFY $(cfg VERIFY)   FIX_ROUNDS $(cfg FIX_ROUNDS)"
 	if is_quick; then echo "UNIT Q ($(state_get Q))"
 	else
 		for id in $(task_ids "$(art tasks)"); do
@@ -283,14 +286,21 @@ gate_amend() {
 	for c in "$STATE_ROOT/$F/lock"; do [ -f "$c" ] && echo "NOTE a run lock exists (session $(cat "$c")) — if a build is running, stop it first"; done
 	echo "GATE amend: OK"
 	echo "FEATURE $F"
+	echo "MODEL $(cfg MODEL_IMPACT)"
 	echo "QUICK $(is_quick && echo yes || echo no)"
 	echo "DONE-TASKS $(done_tasks | tr '\n' ' ')"
 	echo "DRAFT-CR $(draft_crs | head -1)"
 }
 
 cmd_gate() {
-	local what=${1:-}; shift || true
-	resolve_feature "${1:-}"
+	local what=${1:-} feat="" flags=""; shift || true
+	while [ $# -gt 0 ]; do
+		case $1 in --*) flags="$flags $1 ${2:-}"; shift ;; *) feat=$1 ;; esac
+		shift
+	done
+	resolve_feature "$feat"
+	# shellcheck disable=SC2086
+	if [ "$what" = implement ]; then parse_run_flags $flags; check_effective_cfg; fi
 	case $what in
 		plan) gate_plan ;; tasks) gate_tasks ;; implement) gate_implement ;; amend) gate_amend ;;
 		*) die "usage: gate plan|tasks|implement|amend [feature]" ;;
@@ -410,27 +420,142 @@ $(tail -25 "$(VLOG)")"
 }
 
 bump() { # id source -> prints ACTION
-	local r
+	local r max
+	max=$(cfg FIX_ROUNDS)
 	r=$(sfile_get "rounds.$1"); r=$(( ${r:-0} + 1 ))
-	if [ "$r" -gt "$MAX_FIX_ROUNDS" ]; then
+	if [ "$r" -gt "$max" ]; then
 		state_set "$1" STOPPED fix-limit
-		log_event "$1 STOP fix-limit ($MAX_FIX_ROUNDS fix rounds used)"
+		log_event "$1 STOP fix-limit ($max fix rounds used)"
 		echo "ACTION stop fix-limit $1"
 	else
 		sfile_set "rounds.$1" "$r"
-		log_event "$1 fix round $r/$MAX_FIX_ROUNDS ($2)"
-		echo "ACTION fix $1 $2 $r/$MAX_FIX_ROUNDS"
+		log_event "$1 fix round $r/$max ($2)"
+		model_for "$1"
+		echo "ACTION fix $1 $2 $r/$max model=$CV"
 	fi
 }
 
-cmd_start() {
-	local sid="" feat="" out
+act_implement() { model_for "$1"; echo "ACTION implement $1 model=$CV"; }
+act_review() {
+	if [ "$1" = BRANCH ]; then cfg_lookup MODEL_BRANCH_REVIEWER; else cfg_lookup MODEL_REVIEWER; fi
+	echo "ACTION review $1 model=$CV"
+}
+
+task_review() { [ "$1" != Q ] && [ -f "$(art tasks)" ] && task_field "$(art tasks)" "$1" Review | tr '[:upper:]' '[:lower:]'; return 0; }
+
+review_reason() { # id -> one line why; returns 0 when the task gets a reviewer
+	local id=$1 pol tr
+	pol=$(cfg REVIEW)
+	[ "$pol" = none ] && { echo "skipped: reviews are off (REVIEW=none)"; return 1; }
+	tr=$(task_review "$id")
+	case $tr in
+		always) echo "reviewed: the task says Review: always"; return 0 ;;
+		skip) echo "skipped: the task says Review: skip"; return 1 ;;
+	esac
+	case $pol in
+		every) echo "reviewed: REVIEW=every"; return 0 ;;
+		branch)
+			[ "$id" = Q ] && { echo "reviewed: a quick change has no branch review"; return 0; }
+			echo "skipped: REVIEW=branch (the branch review covers it)"; return 1 ;;
+		*) echo "reviewed: REVIEW=$pol"; return 0 ;;
+	esac
+}
+
+after_implemented() { # id -> ACTION review, or PASS without a reviewer
+	local why
+	if why=$(review_reason "$1"); then
+		log_event "$1 $why"; act_review "$1"
+	else
+		state_set "$1" PASS "$(short)"; [ "$1" = Q ] || state_set BRANCH CLEARED
+		log_event "$1 PASS without review — $why"
+		echo "$1 passes without a review ($why)"
+		if [ "$1" = Q ]; then echo "ACTION finish"; else echo "ACTION next"; fi
+	fi
+}
+
+parse_run_flags() { # flags... -> RUN_CONF (KEY=value lines) or dies with the valid values
+	local f v k m pair
+	RUN_CONF=""
+	_rc() { cfg_valid "$1" "$2" || die "--$3 '$2' is not valid — use one of: $(cfg_values "$1")"; RUN_CONF="$RUN_CONF$1=$2
+"; }
 	while [ $# -gt 0 ]; do
-		case $1 in --session) sid=${2:-}; shift ;; *) feat=$1 ;; esac
+		f=$1; v=${2:-}
+		case $f in
+			--profile) _rc PROFILE "$v" profile ;;
+			--review) _rc REVIEW "$v" review ;;
+			--verify) _rc VERIFY "$v" verify ;;
+			--fix-rounds) _rc FIX_ROUNDS "$v" fix-rounds ;;
+			--mutation) _rc MUTATION "$v" mutation ;;
+			--model)
+				[ -n "$v" ] || die "--model needs a list, e.g. --model T002=haiku,implementer=sonnet,reviewer=opus"
+				for pair in $(printf '%s' "$v" | tr ',' ' '); do
+					k=${pair%%=*}; m=${pair#*=}
+					[ "$k" != "$pair" ] || die "--model: '$pair' should be <task or agent>=<model>, e.g. T002=haiku"
+					cfg_valid MODEL_IMPLEMENTER "$m" || die "--model $pair: model must be one of: haiku sonnet opus"
+					case $k in
+						T[0-9][0-9][0-9] | Q) RUN_CONF="${RUN_CONF}MODEL_$k=$m
+" ;;
+						implementer | reviewer | branch-reviewer | planner | quick | impact)
+							RUN_CONF="${RUN_CONF}MODEL_$(printf '%s' "$k" | tr 'a-z-' 'A-Z_')=$m
+" ;;
+						*) die "--model $pair: '$k' is not a task id (T002) or an agent (implementer, reviewer, branch-reviewer, planner, quick, impact)" ;;
+					esac
+				done ;;
+			*) die "unknown flag '$f' — /implement takes: --profile fast|balanced|strict, --review none|branch|risk|every, --verify targeted|task|every-N|end|off, --fix-rounds 0-3, --mutation off|risk|every, --model T002=haiku,reviewer=opus" ;;
+		esac
+		shift; [ $# -gt 0 ] && shift
+	done
+	return 0
+}
+
+check_effective_cfg() { # dies naming the first setting that is not valid, and where it was set
+	local k
+	for k in $CFG_KEYS; do
+		cfg_lookup "$k"
+		cfg_valid "$k" "$CV" || die "$k=$CV (set in: $CS) is not valid — use one of: $(cfg_values "$k")"
+	done
+}
+
+cmd_config() { # [TASK]
+	local t=${1:-} k v
+	soft_feature || F=""
+	echo "Settings${F:+ for $F} — first match wins: run flags > task fields > plan.md frontmatter > .claude/loop.conf > profile > kit default"
+	for k in $CFG_KEYS; do cfg_lookup "$k"; printf '%s=%s (%s)\n' "$k" "$CV" "$CS"; done
+	if [ -n "$t" ]; then
+		[ -n "$F" ] || die "no feature on this branch — check out the feature branch to see a task's settings"
+		if [ "$t" != Q ]; then task_block "$(art tasks)" "$t" | grep -q . || die "no task $t in $(art tasks)"; fi
+		echo "Task $t"
+		model_for "$t"; printf 'MODEL=%s (%s)\n' "$CV" "$CS"
+		if [ "$t" != Q ]; then
+			for k in Size Risk Review Verify; do
+				v=$(task_field "$(art tasks)" "$t" "$k"); [ -n "$v" ] && printf '%s=%s (task)\n' "$(printf '%s' "$k" | tr '[:lower:]' '[:upper:]')" "$v"
+			done
+		fi
+		printf 'REVIEWED=%s\n' "$(review_reason "$t")"
+	fi
+	return 0
+}
+
+cmd_start() {
+	local sid="" feat="" out flags=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+			--session) sid=${2:-}; shift ;;
+			--*) flags="$flags $1 ${2:-}"; shift ;;
+			*) feat=$1 ;;
+		esac
 		shift
 	done
 	resolve_feature "$feat"
+	# shellcheck disable=SC2086
+	out=$(parse_run_flags $flags 2>&1) || { printf '%s\n' "$out"; echo "ACTION stop flags"; exit 1; }
+	out=$(check_effective_cfg 2>&1) || { printf '%s\n' "$out"; echo "ACTION stop config"; exit 1; }
 	out=$(gate_implement 2>&1) || { printf '%s\n' "$out"; echo "ACTION stop gate"; exit 1; }
+	ensure_state
+	# shellcheck disable=SC2086
+	parse_run_flags $flags
+	if [ -n "$RUN_CONF" ]; then printf '%s' "$RUN_CONF" > "$(sdir)/run.conf"
+	elif [ -f "$(sdir)/run.conf" ]; then echo "Using the flags of the interrupted run: $(tr '\n' ' ' < "$(sdir)/run.conf")"; fi
 	case $sid in '' | *'$'* | *CLAUDE_SESSION_ID*) warn "no session id — the orchestrator write-lock is off for this run"; sid="" ;; esac
 	ensure_state
 	rm -f "$(sdir)/paused"
@@ -459,23 +584,24 @@ cmd_next() {
 		st=$(state_get Q)
 		case $st in
 			PASS) echo "ACTION finish" ;;
-			IMPLEMENTED) echo "ACTION review Q" ;;
-			*) if out=$(pre_task Q); then echo "ACTION implement Q"; else printf '%s\n' "$out"; log_event "STOP pre-task Q"; echo "ACTION stop pre-task Q"; fi ;;
+			IMPLEMENTED) after_implemented Q ;;
+			*) if out=$(pre_task Q); then act_implement Q; else printf '%s\n' "$out"; log_event "STOP pre-task Q"; echo "ACTION stop pre-task Q"; fi ;;
 		esac
 		return 0
 	fi
 	for id in $(task_ids "$(art tasks)"); do
-		[ "$(state_get "$id")" = IMPLEMENTED ] && { echo "RESUME $id was implemented but not reviewed"; echo "ACTION review $id"; return 0; }
+		[ "$(state_get "$id")" = IMPLEMENTED ] && { echo "RESUME $id was implemented but not reviewed"; after_implemented "$id"; return 0; }
 	done
 	for id in $(task_ids "$(art tasks)"); do
 		st=$(state_get "$id")
 		[ -z "$st" ] && in_list "$id" "$(done_tasks)" && continue
 		case $st in PASS | NEEDS-HUMAN) continue ;; esac
-		if out=$(pre_task "$id"); then echo "ACTION implement $id"
+		if out=$(pre_task "$id"); then act_implement "$id"
 		else printf '%s\n' "$out"; log_event "STOP pre-task $id"; echo "ACTION stop pre-task $id"; fi
 		return 0
 	done
-	case $(state_get BRANCH) in PASS | FIX | ESCALATE) echo "ACTION finish" ;; *) echo "ACTION review BRANCH" ;; esac
+	[ "$(cfg REVIEW)" = none ] && { echo "ACTION finish"; return 0; }
+	case $(state_get BRANCH) in PASS | FIX | ESCALATE) echo "ACTION finish" ;; *) act_review BRANCH ;; esac
 }
 
 cmd_log() {
@@ -500,7 +626,7 @@ cmd_log() {
 					if out=$(post_task "$id" full); then
 						state_set "$id" IMPLEMENTED "$(short)"
 						[ -n "$out" ] && printf '%s\n' "$out"
-						echo "ACTION review $id"
+						after_implemented "$id"
 					else
 						sfile_set "findings.$id" "$out"
 						echo "post-task checks failed for $id:"; printf '%s\n' "$out"
@@ -544,7 +670,7 @@ cmd_log() {
 release_lock() { rm -f "$(sdir)/lock"; }
 
 cmd_stop() { resolve_feature; log_event "STOP $*"; release_lock; cmd_report; }
-cmd_finish() { resolve_feature; log_event "RUN END"; release_lock; cmd_report; }
+cmd_finish() { resolve_feature; log_event "RUN END"; release_lock; cmd_report; rm -f "$(sdir)/run.conf"; }
 cmd_pause() { # [--now] [--session ID] [feature] — the run stops at the next task boundary (--now: agents are stopped too)
 	local mode=graceful sid="" feat="" l lsid fs=""
 	while [ $# -gt 0 ]; do
@@ -575,7 +701,7 @@ cmd_task() {
 	local id=${1:-} r
 	resolve_feature; [ -n "$id" ] || die "usage: task <ID>"
 	r=$(sfile_get "rounds.$id")
-	echo "FEATURE $F   KIND $(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)   ROUND ${r:-0}/$MAX_FIX_ROUNDS"
+	echo "FEATURE $F   KIND $(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)   ROUND ${r:-0}/$(cfg FIX_ROUNDS)"
 	if [ "$id" = Q ]; then
 		echo "UNIT the whole brief: $(art brief)"; doc "$(art brief)"
 		echo; echo "COMMIT TRAILERS (required, as the last lines of every commit message):"
@@ -622,7 +748,7 @@ cmd_review_info() {
 				task_block "$(art tasks)" "$id"
 			fi
 			echo "RANGE $(short "$base")..$(short)   (git diff $(short "$base")..HEAD)"
-			echo "ROUND $(sfile_get "rounds.$id")/$MAX_FIX_ROUNDS"
+			echo "ROUND $(sfile_get "rounds.$id")/$(cfg FIX_ROUNDS)"
 			git diff --stat "$base" HEAD | tail -25
 			sfile_get "watch.$id"
 			;;
@@ -705,7 +831,8 @@ cmd_report() {
 				*) printf '  %s  %-12s %s %s(fix rounds: %s)\n' "$id" "$st" "$title" "${d:+$d }" "$(sfile_get "rounds.$id")" ;;
 			esac
 		done
-		echo "Branch review: $(state_get BRANCH | sed 's/^CLEARED$/not run since the last change/; s/^$/not run/')"
+		if [ "$(cfg REVIEW)" = none ]; then echo "Reviews: off (REVIEW=none) — no task or branch review ran"
+		else echo "Branch review: $(state_get BRANCH | sed 's/^CLEARED$/not run since the last change/; s/^$/not run/')"; fi
 	fi
 	end=$(grep -E ' (STOP|RUN END)' "$(sdir)/run.log" 2>/dev/null | tail -1)
 	[ -n "$end" ] && echo "Run: $end"
@@ -737,6 +864,7 @@ cmd=${1:-help}; shift || true
 case $cmd in
 	new) cmd_new "$@" ;;
 	status) cmd_status "$@" ;;
+	config) cmd_config "$@" ;;
 	suggest-verify) suggest_verify ;;
 	gate) cmd_gate "$@" ;;
 	check) cmd_check "$@" ;;

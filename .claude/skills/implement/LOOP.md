@@ -7,16 +7,18 @@ If the user sends a message while the build runs, a hook pauses it (you'll see "
 `.claude/scripts/loop.sh` is the state machine. It decides what happens next and prints it as the **last line**, starting with `ACTION`. You do what that line says — nothing else, nothing more.
 
 ## Start
-Run `.claude/scripts/loop.sh start --session <your session id>`. Then act on its last line (`ACTION next`, or `ACTION stop …` if the run can't start).
+Run `.claude/scripts/loop.sh start --session <your session id> <run flags, if any, exactly as the user typed them>`. Then act on its last line (`ACTION next`, or `ACTION stop …` if the run can't start).
+
+Every `implement`, `review` and `fix` action ends with `model=<haiku|sonnet|opus>`: pass that value as the Agent tool's `model` parameter. It is resolved from the user's settings (`loop.sh config <ID>` shows why).
 
 ## Actions
 | Last line | What you do |
 |---|---|
 | `ACTION next` | Run `.claude/scripts/loop.sh next`. |
-| `ACTION implement <ID>` | Dispatch a NEW agent — **implementer**, or **quick-builder** when ID is `Q` — with the prompt `Feature: <feature>. Task: <ID>.` Then run `.claude/scripts/loop.sh log <ID> <agent> '<line 1 of its final message>'`. |
-| `ACTION review <ID>` | Dispatch a NEW **reviewer** with `Mode: task. Feature: <feature>. Task: <ID>.` (ID `Q` → `Mode: brief`; ID `BRANCH` → `Mode: branch`). Keep its full message. Then run `.claude/scripts/loop.sh log <ID> reviewer '<line 1 of its final message>'`. |
-| `ACTION fix <ID> review <r/max>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. Fix only these reviewer findings:` followed by the reviewer's full message, verbatim. Then `log` as for implement. |
-| `ACTION fix <ID> post-task <r/max>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. The post-task checks failed: run .claude/scripts/loop.sh findings <ID> and fix exactly those.` Then `log` as for implement. |
+| `ACTION implement <ID> model=<m>` | Dispatch a NEW agent — **implementer**, or **quick-builder** when ID is `Q` — with the prompt `Feature: <feature>. Task: <ID>.` Then run `.claude/scripts/loop.sh log <ID> <agent> '<line 1 of its final message>'`. |
+| `ACTION review <ID> model=<m>` | Dispatch a NEW **reviewer** with `Mode: task. Feature: <feature>. Task: <ID>.` (ID `Q` → `Mode: brief`; ID `BRANCH` → `Mode: branch`). Keep its full message. Then run `.claude/scripts/loop.sh log <ID> reviewer '<line 1 of its final message>'`. |
+| `ACTION fix <ID> review <r/max> model=<m>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. Fix only these reviewer findings:` followed by the reviewer's full message, verbatim. Then `log` as for implement. |
+| `ACTION fix <ID> post-task <r/max> model=<m>` | Dispatch a NEW implementer (quick-builder for Q): `Feature: <feature>. Task: <ID>. Fix round <r/max>. The post-task checks failed: run .claude/scripts/loop.sh findings <ID> and fix exactly those.` Then `log` as for implement. |
 | `ACTION stop …` | Run `.claude/scripts/loop.sh stop '<the whole ACTION line>'`, then report. |
 | `ACTION finish` | Run `.claude/scripts/loop.sh finish`, then report. |
 | `ACTION pause` | The user paused the build. Run `.claude/scripts/loop.sh status`, show it, and say `/resume` continues. Then you are no longer the orchestrator: do what the user asks. |

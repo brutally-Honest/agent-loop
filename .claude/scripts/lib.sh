@@ -22,8 +22,8 @@ al_init() {
 	TEST_CMD=""
 	BASE_BRANCH=""
 	SPECS_DIR="specs"
-	MAX_FIX_ROUNDS=2
-	PLAN_MAX_LINES=200
+	# profile keys stay unset unless loop.conf sets them, so cfg can tell "repo" from "profile"
+	unset $CFG_KEYS MAX_FIX_ROUNDS
 	QUICK_MAX_ACS=5
 	QUICK_MAX_STEPS=5
 	PROTECTED_GLOBS=".githooks/* .github/workflows/*"
@@ -34,8 +34,126 @@ al_init() {
 	[ -f "$AL_CONF" ] || AL_CONF="$AL_KIT_DIR/loop.conf"
 	# shellcheck disable=SC1090
 	if [ -f "$AL_CONF" ]; then . "$AL_CONF"; fi
+	# v0.1 name of FIX_ROUNDS
+	if [ -z "${FIX_ROUNDS+x}" ] && [ -n "${MAX_FIX_ROUNDS+x}" ]; then FIX_ROUNDS=$MAX_FIX_ROUNDS; fi
 	STATE_ROOT="$REPO/.agent-loop"
 }
+
+# --- settings: run > task > feature > repo > profile > kit default ------------------
+#
+# cfg KEY [TASK] prints the effective value; cfg_lookup sets CV (value) and CS (where it
+# came from: run | task | feature | repo | profile:<name> | default) without a subshell.
+#   run      .agent-loop/<f>/run.conf, KEY=value lines written by `loop.sh start` from flags
+#   task     the task block's Model: / Review: / Verify: fields (see model_for, task_review)
+#   feature  plan.md frontmatter (brief.md for /quick), keys in lower-kebab case: review:, fix-rounds:
+#   repo     .claude/loop.conf
+CFG_KEYS="PROFILE REVIEW VERIFY FIX_ROUNDS MUTATION CRITIC MODEL_PLANNER MODEL_IMPLEMENTER MODEL_REVIEWER MODEL_BRANCH_REVIEWER MODEL_QUICK MODEL_IMPACT SIZE_MODELS AUTO_APPROVE_TASKS TRAILERS REVIEW_LINES REVIEW_GLOBS PLAN_MAX_LINES BATCH_SMALL"
+
+profile_default() { # profile key -> value; returns 1 when the profile leaves the key to the kit default
+	case $1:$2 in
+		fast:REVIEW) echo branch ;;              balanced:REVIEW) echo risk ;;            strict:REVIEW) echo every ;;
+		fast:VERIFY) echo every-3 ;;             balanced:VERIFY) echo task ;;            strict:VERIFY) echo task ;;
+		fast:FIX_ROUNDS) echo 1 ;;               balanced:FIX_ROUNDS) echo 2 ;;           strict:FIX_ROUNDS) echo 2 ;;
+		fast:MUTATION) echo off ;;               balanced:MUTATION) echo risk ;;          strict:MUTATION) echo every ;;
+		fast:CRITIC) echo off ;;                 balanced:CRITIC) echo self ;;            strict:CRITIC) echo agent ;;
+		fast:MODEL_PLANNER) echo sonnet ;;       balanced:MODEL_PLANNER) echo opus ;;     strict:MODEL_PLANNER) echo opus ;;
+		*:MODEL_IMPLEMENTER) echo sonnet ;;
+		fast:MODEL_REVIEWER) echo sonnet ;;      balanced:MODEL_REVIEWER) echo sonnet ;;  strict:MODEL_REVIEWER) echo opus ;;
+		fast:MODEL_BRANCH_REVIEWER) echo sonnet ;; balanced:MODEL_BRANCH_REVIEWER) echo opus ;; strict:MODEL_BRANCH_REVIEWER) echo opus ;;
+		*:MODEL_QUICK) echo sonnet ;;
+		*:MODEL_IMPACT) echo sonnet ;;
+		fast:SIZE_MODELS) echo "S=haiku M=sonnet L=sonnet" ;;
+		balanced:SIZE_MODELS) echo "S=haiku M=sonnet L=opus" ;;
+		strict:SIZE_MODELS) echo "S=sonnet M=sonnet L=opus" ;;
+		fast:AUTO_APPROVE_TASKS) echo on ;;      balanced:AUTO_APPROVE_TASKS) echo on ;;  strict:AUTO_APPROVE_TASKS) echo off ;;
+		*:TRAILERS) echo on ;;
+		fast:REVIEW_LINES) echo 300 ;;           balanced:REVIEW_LINES) echo 150 ;;
+		fast:REVIEW_GLOBS) echo "" ;;            balanced:REVIEW_GLOBS) printf '%s\n' "$WATCHED_GLOBS" ;;
+		*:PLAN_MAX_LINES) echo 200 ;;
+		*) return 1 ;;
+	esac
+}
+
+kit_default() { # key -> value for keys no profile sets
+	case $1 in
+		REVIEW_LINES) echo 150 ;;
+		REVIEW_GLOBS) printf '%s\n' "$WATCHED_GLOBS" ;;
+		BATCH_SMALL) echo off ;;
+		PROFILE) echo balanced ;;
+	esac
+}
+
+cfg_values() { # key -> the valid values, for messages
+	case $1 in
+		PROFILE) echo "fast balanced strict" ;;
+		REVIEW) echo "none branch risk every" ;;
+		VERIFY) echo "targeted task every-N end off" ;;
+		FIX_ROUNDS) echo "0 1 2 3" ;;
+		MUTATION) echo "off risk every" ;;
+		CRITIC) echo "off self agent" ;;
+		MODEL_*) echo "haiku sonnet opus" ;;
+		SIZE_MODELS) echo "'S=<model> M=<model> L=<model>'" ;;
+		AUTO_APPROVE_TASKS | TRAILERS | BATCH_SMALL) echo "on off" ;;
+		REVIEW_LINES | PLAN_MAX_LINES) echo "a number" ;;
+		REVIEW_GLOBS) echo "space-separated globs" ;;
+	esac
+}
+
+cfg_valid() { # key value -> 0 if valid
+	local v=$2 m
+	case $1 in
+		VERIFY) case $v in every-[1-9] | every-[1-9][0-9]) return 0 ;; esac ;;
+		SIZE_MODELS)
+			for m in $v; do case $m in [SML]=haiku | [SML]=sonnet | [SML]=opus) ;; *) return 1 ;; esac; done
+			return 0 ;;
+		REVIEW_LINES | PLAN_MAX_LINES) case $v in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac ;;
+		REVIEW_GLOBS) return 0 ;;
+	esac
+	case " $(cfg_values "$1") " in *" $v "*) return 0 ;; esac
+	return 1
+}
+
+feature_conf_file() { if is_quick; then art brief; else art plan; fi; }
+
+run_conf_get() { # key -> value from this run's flags
+	[ -n "${F:-}" ] && [ -f "$STATE_ROOT/$F/run.conf" ] || return 0
+	K="$1" awk '{ i = index($0, "="); if (i && substr($0, 1, i - 1) == ENVIRON["K"]) v = substr($0, i + 1) } END { if (v != "") print v }' "$STATE_ROOT/$F/run.conf"
+}
+
+cfg_lookup() { # KEY -> CV CS
+	local k=$1 v prof
+	v=$(run_conf_get "$k"); if [ -n "$v" ]; then CV=$v; CS=run; return 0; fi
+	if [ -n "${F:-}" ]; then
+		v=$(fm_get "$(feature_conf_file)" "$(printf '%s' "$k" | tr 'A-Z_' 'a-z-')")
+		if [ -n "$v" ]; then CV=$v; CS=feature; return 0; fi
+	fi
+	if eval "[ -n \"\${$k+x}\" ]"; then eval "CV=\$$k"; CS=repo; return 0; fi
+	if [ "$k" = PROFILE ]; then CV=balanced; CS=default; return 0; fi
+	cfg_lookup PROFILE; prof=$CV
+	if v=$(profile_default "$prof" "$k"); then CV=$v; CS="profile:$prof"; return 0; fi
+	CV=$(kit_default "$k"); CS=default
+}
+cfg() { cfg_lookup "$1"; printf '%s\n' "$CV"; }
+
+model_for() { # task id -> CV CS: the implementer's model (Q: the quick-builder's)
+	local t=$1 v sz
+	if [ "$t" = Q ]; then
+		v=$(run_conf_get MODEL_Q); if [ -n "$v" ]; then CV=$v; CS=run; return 0; fi
+		cfg_lookup MODEL_QUICK; return 0
+	fi
+	v=$(run_conf_get "MODEL_$t"); if [ -n "$v" ]; then CV=$v; CS=run; return 0; fi
+	if [ -f "$(art tasks)" ]; then
+		v=$(task_field "$(art tasks)" "$t" Model); if [ -n "$v" ]; then CV=$v; CS=task; return 0; fi
+		sz=$(task_field "$(art tasks)" "$t" Size | cut -c1)
+		if [ -n "$sz" ]; then
+			cfg_lookup SIZE_MODELS
+			v=$(printf '%s\n' $CV | awk -F= -v s="$sz" '$1 == s { print $2 }')
+			if [ -n "$v" ]; then CV=$v; CS="size $sz, SIZE_MODELS from $CS"; return 0; fi
+		fi
+	fi
+	cfg_lookup MODEL_IMPLEMENTER
+}
+
 
 suggest_verify() { # best guess at VERIFY_CMD from files at the repo root; prints nothing if no guess
 	local parts="" pm s r

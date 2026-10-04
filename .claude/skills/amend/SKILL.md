@@ -16,7 +16,7 @@ Change request, in the user's words: $ARGUMENTS
 ## Steps
 1. If the request is vague, ask ONE AskUserQuestion call (≤3 questions): what exactly changes; why; what should happen to behaviour that's already built (keep, rework, remove).
 2. Run `.claude/scripts/loop.sh cr-new`. It prints the CR id and file (or the existing draft CR, which you revise instead).
-3. Dispatch the **impact-analyst** with: `Feature: <feature>. CR: <id>. Mode: <reconcile if --reconcile was given, else amend>. Request: <the user's words plus their answers, verbatim>.`
+3. Dispatch the **impact-analyst** (Agent tool `model`: the gate's MODEL) with: `Feature: <feature>. CR: <id>. Mode: <reconcile if --reconcile was given, else amend>. Request: <the user's words plus their answers, verbatim>.`
 4. It returns `CR-DRAFTED <id>`. Show the user: class and scope; the Delta lines; the impact on done tasks (one line each); the recommendation. End with:
    "Type `/approve change` to accept it — this reopens the <scope>, and the build stays paused until it's approved again — or tell me what to change."
 

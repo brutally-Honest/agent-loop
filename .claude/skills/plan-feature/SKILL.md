@@ -11,7 +11,7 @@ allowed-tools: Bash(.claude/scripts/loop.sh *) Bash(./.claude/scripts/loop.sh *)
 !`.claude/scripts/loop.sh gate plan`
 
 ## Steps
-1. Dispatch the **planner** agent with: `Feature: <FEATURE>. Mode: <MODE>.` — values from the gate output. If CHANGE-REQUESTS lists any, add `Change requests: <ids>`.
+1. Dispatch the **planner** agent (Agent tool `model`: the gate's MODEL) with: `Feature: <FEATURE>. Mode: <MODE>.` — values from the gate output. If CHANGE-REQUESTS lists any, add `Change requests: <ids>`.
 2. It returns `PLAN-DRAFTED <n>` plus numbered questions. If n is 0, go to step 4.
 3. Ask the user those questions with AskUserQuestion (≤4 per call); put each question's recommended option first, labelled "(Recommended)". Then get the answers into the plan:
    - send them to the same planner with SendMessage: "Mode: revise. Answers: <each question → answer>. Mark each `→ decided: <answer>`, update the affected sections, run loop.sh check plan --draft";

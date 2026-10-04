@@ -25,7 +25,10 @@ block() { jq -cn --arg r "$1" '{decision:"block", reason:$r}'; exit 0; }
 
 if [ "$name" != approve ]; then
 	gate=$name; [ "$name" = plan-feature ] && gate=plan
-	out=$("$scripts/loop.sh" gate "$gate" 2>&1) || block "/$name stopped by its gate — nothing ran:
+	gargs=""; [ "$gate" = implement ] && gargs=$args   # run flags are checked here, before Claude sees them
+	set -f
+	# shellcheck disable=SC2086
+	out=$("$scripts/loop.sh" gate "$gate" $gargs 2>&1) || block "/$name stopped by its gate — nothing ran:
 $out"
 	exit 0
 fi

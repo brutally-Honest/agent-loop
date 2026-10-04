@@ -307,6 +307,90 @@ out=$(printf '{"command_name":"plan-feature","command_args":"","cwd":"%s"}' "$T"
 has "gate hook blocks /plan-feature on a quick feature" "$out" '"block"'
 has "quick next" "$($L start --session s2 >/dev/null; $L next)" "ACTION implement Q"
 
+cat > "$X/gen.py" <<'PY2'
+import sys, os
+kind, d, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def put(path, pairs, fm=""):
+    s = open(path).read()
+    for h, t in pairs:
+        s = s.replace("## " + h + "\n", "## " + h + "\n" + t + "\n", 1)
+    if fm:
+        s = s.replace("status: draft\n", "status: draft\n" + fm + "\n", 1)
+    open(path, "w").write(s)
+if kind == "spec":
+    acs = "\n".join("- **AC%d** — When step %d runs, the system shall print %d." % (i, i, i) for i in range(1, n + 1))
+    put(d + "/spec.md", [("Problem", "p"), ("Goal", "g"), ("Non-goals", "- none"), ("Acceptance criteria", acs),
+                         ("Edge cases", "- **E1** — empty → nothing (AC1)")])
+elif kind == "plan":
+    cov = "\n".join("| AC%d | src | t%d |" % (i, i) for i in range(1, n + 1))
+    put(d + "/plan.md", [("Summary", "s"), ("Context", "c"), ("Approach", "a"),
+                         ("Alternatives considered", "### A1 — x (chosen)\n- Pros: p\n- Cons: c\n### A2 — y\n- Pros: p\n- Cons: c"),
+                         ("Design", "d"), ("AC coverage", cov), ("Test strategy", "t"), ("Risks", "r")], os.environ.get("FM", ""))
+elif kind == "tasks":
+    b = ""
+    for i in range(1, n + 1):
+        x = os.environ.get("TX%d" % i, "")
+        b += "### T%03d — step %d\n- Do: src/s%d.sh\n- Tests: t%d (AC%d)\n- AC: AC%d\n- Commit: feat(x): step %d\n- Depends: —\n%s\n" % (i, i, i, i, i, i, i, x + "\n" if x else "")
+    s = open(d + "/tasks.md").read().replace("## Tasks\n", "## Tasks\n\n" + b, 1)
+    open(d + "/tasks.md", "w").write(s)
+PY2
+mkfeat() { # slug ntasks [plan frontmatter lines] -> an approved feature on its branch; FF DD FN set. TXn = extra lines for task n
+	local slug=$1 n=$2
+	git checkout -q main
+	FF=$($L new feat "$slug" | awk '$1 == "FEATURE" { print $2 }'); DD=specs/$FF; FN=${FF%%-*}
+	python3 "$X/gen.py" spec "$DD" "$n" && $A spec >/dev/null || { echo "mkfeat: spec"; return 1; }
+	$L gate plan >/dev/null && FM="${3:-}" python3 "$X/gen.py" plan "$DD" "$n" && $A plan >/dev/null || { echo "mkfeat: plan"; return 1; }
+	$L gate tasks >/dev/null; python3 "$X/gen.py" tasks "$DD" "$n" && $A tasks >/dev/null || { echo "mkfeat: tasks"; $L check tasks; return 1; }
+}
+impl() { # id [extra lines] — a simulated implementer: a source file + a test, one commit with the trailers
+	local id=$1 k=${2:-1}
+	awk -v n="$k" -v id="$id" 'BEGIN { for (i = 1; i <= n; i++) print "echo " id " " i }' > "src/$FN-$id.sh"
+	printf 'exit 0\n' > "tests/${FN}_${id}_test.sh"
+	printf 'feat(x): %s\n\nTask: %s\nFeature: %s\nAC: AC1\n' "$id" "$id" "$FF" > .agent-loop/commit-msg
+	git add "src/$FN-$id.sh" "tests/${FN}_${id}_test.sh" && git commit -qF .agent-loop/commit-msg
+}
+
+echo "== overrides: run > task > feature > repo > profile"
+TX2="- Model: haiku" mkfeat noreview 2 "review: none" || exit 1
+has "task layer" "$($L config T002)" "MODEL=haiku (task)"
+has "feature layer" "$($L config)" "REVIEW=none (feature)"
+has "profile layer" "$($L config T001)" "MODEL=sonnet (profile:balanced)"
+has "repo layer" "$($L config)" "PROFILE=balanced (repo)"
+has "bogus flag refused" "$($L start --session s3 --review bogus 2>&1)" "use one of: none branch risk every"
+has "bogus model refused" "$($L start --session s3 --model T002=gpt 2>&1)" "haiku sonnet opus"
+has "unknown flag refused" "$($L start --session s3 --turbo 2>&1)" "unknown flag"
+bad test -f .agent-loop/$FF/lock
+has "/implement hook refuses bad flags" "$(printf '{"command_name":"implement","command_args":"--review bogus","cwd":"%s"}' "$T" | .claude/hooks/on-command.sh)" '"block"'
+has "start with run flags" "$($L start --session s3 --model T002=opus)" "ACTION next"
+has "run layer" "$($L config T002)" "MODEL=opus (run)"
+has "ACTION carries the model" "$($L next)" "ACTION implement T001 model=sonnet"
+impl T001
+out=$($L log T001 implementer "DONE T001 x"); has "review: none → no reviewer" "$out" "passes without a review"; has "→ next" "$out" "ACTION next"
+has "run model for T002" "$($L next)" "ACTION implement T002 model=opus"
+impl T002
+has "T002 no reviewer" "$($L log T002 implementer "DONE T002 x")" "ACTION next"
+has "no branch review" "$($L next)" "ACTION finish"
+has "report says reviews off" "$($L finish)" "Reviews: off"
+bad test -f .agent-loop/$FF/run.conf
+has "run flags end with the run" "$($L config T002)" "MODEL=haiku (task)"
+
+echo "== profiles"
+git checkout -q main
+cp .claude/loop.conf "$X/conf.p"
+while IFS='|' read -r prof want; do
+	sed "s/^PROFILE=.*/PROFILE=\"$prof\"/" "$X/conf.p" > .claude/loop.conf
+	out=$($L config)
+	for kv in $want; do has "$prof: $kv" "$out" "^$(printf '%s' "$kv" | tr '~' ' ')"; done
+	eq "$prof: nothing but PROFILE comes from the repo" "$(printf '%s\n' "$out" | grep -c '(repo)$')" 1
+done <<'EOF'
+fast|REVIEW=branch VERIFY=every-3 FIX_ROUNDS=1 MUTATION=off CRITIC=off MODEL_PLANNER=sonnet MODEL_IMPLEMENTER=sonnet MODEL_REVIEWER=sonnet MODEL_BRANCH_REVIEWER=sonnet MODEL_QUICK=sonnet MODEL_IMPACT=sonnet SIZE_MODELS=S=haiku~M=sonnet~L=sonnet AUTO_APPROVE_TASKS=on TRAILERS=on REVIEW_LINES=300 REVIEW_GLOBS= PLAN_MAX_LINES=200
+balanced|REVIEW=risk VERIFY=task FIX_ROUNDS=2 MUTATION=risk CRITIC=self MODEL_PLANNER=opus MODEL_IMPLEMENTER=sonnet MODEL_REVIEWER=sonnet MODEL_BRANCH_REVIEWER=opus MODEL_QUICK=sonnet MODEL_IMPACT=sonnet SIZE_MODELS=S=haiku~M=sonnet~L=opus AUTO_APPROVE_TASKS=on TRAILERS=on REVIEW_LINES=150 REVIEW_GLOBS=Makefile~go.mod PLAN_MAX_LINES=200
+strict|REVIEW=every VERIFY=task FIX_ROUNDS=2 MUTATION=every CRITIC=agent MODEL_PLANNER=opus MODEL_IMPLEMENTER=sonnet MODEL_REVIEWER=opus MODEL_BRANCH_REVIEWER=opus MODEL_QUICK=sonnet MODEL_IMPACT=sonnet SIZE_MODELS=S=sonnet~M=sonnet~L=opus AUTO_APPROVE_TASKS=off TRAILERS=on PLAN_MAX_LINES=200
+EOF
+cp "$X/conf.p" .claude/loop.conf
+has "an invalid repo setting stops the run, naming where it is" "$(printf 'FIX_ROUNDS=9\n' >> .claude/loop.conf; git checkout -q feat/$FF; $L start --session s4 2>&1)" "FIX_ROUNDS=9 (set in: repo)"
+cp "$X/conf.p" .claude/loop.conf
+
 echo "== install.sh upgrade over a v0.1 settings.json"
 U=$(mktemp -d "$X/up.XXXXXX"); (cd "$U" && git init -q)
 mkdir -p "$U/.claude"

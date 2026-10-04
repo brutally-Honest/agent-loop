@@ -71,7 +71,7 @@ check_spec() { # file [draft|approve]
 }
 
 check_plan() { # file [draft|approve]
-	local f=$1 mode=${2:-approve} alts n chosen bad spec ids all cov id lines undecided
+	local f=$1 mode=${2:-approve} alts n chosen bad spec ids all cov id lines undecided max
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
 	_need_sections "$f" "Summary" "Approach" "Alternatives considered" "Design" "AC coverage" "Test strategy" "Risks"
@@ -94,7 +94,8 @@ check_plan() { # file [draft|approve]
 	for id in $ids; do in_list "$id" "$cov" || err "'## AC coverage' does not mention $id"; done
 	for id in $(doc "$f" | ac_refs); do in_list "$id" "$all" || err "plan mentions $id, which is not in spec.md"; done
 	lines=$(fm_body "$f" | wc -l | tr -d ' ')
-	[ "$lines" -le "$PLAN_MAX_LINES" ] || err "plan is $lines lines; keep it under $PLAN_MAX_LINES (loop.conf PLAN_MAX_LINES): summarise and point at code"
+	max=$(cfg PLAN_MAX_LINES)
+	[ "$lines" -le "$max" ] || err "plan is $lines lines; keep it under $max (PLAN_MAX_LINES): summarise and point at code"
 	section "$f" "Test strategy" | grep -qE '[0-9]+ ?%' && err "'## Test strategy' sets a coverage percentage — name the behaviours and edge cases to test instead"
 	if [ "$mode" != draft ]; then
 		undecided=$(section "$f" "Open questions" | grep -E '^[[:space:]]*[-*][[:space:]]*(\*\*)?Q[0-9]+' | grep -v 'decided:')
