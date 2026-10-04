@@ -236,7 +236,7 @@ next_step() {
 	for c in $(task_ids "$(art tasks)"); do [ "$(state_get "$c")" = NEEDS-HUMAN ] && nh="$nh $c"; done
 	st=$(state_get BRANCH); [ "$(cfg REVIEW)" = none ] && st=PASS
 	case $st in
-		PASS | FIX | ESCALATE) echo "done — read the report (loop.sh report)${nh:+, do the manual checks for$nh}, then open the PR" ;;
+		PASS | FIX | ESCALATE | OFF) echo "done — read the report (loop.sh report)${nh:+, do the manual checks for$nh}, then open the PR" ;;
 		*) echo "/al-implement (branch review pending)" ;;
 	esac
 }
@@ -622,7 +622,9 @@ after_implemented() { # id -> ACTION review, or PASS without a reviewer
 	if [ $rc = 0 ]; then
 		log_event "$1 $why"; echo "$1 $why"; act_review "$1"
 	else
-		state_set "$1" PASS "$(short)"; [ "$1" = Q ] || state_set BRANCH CLEARED
+		if [ "$1" = Q ] && [ "$(cfg REVIEW)" = none ]; then state_set Q PASS "reviews off"
+		else state_set "$1" PASS "$(short)"; fi
+		[ "$1" = Q ] || state_set BRANCH CLEARED
 		log_event "$1 PASS without review — $why"
 		echo "$1 passes without a review ($why)"
 		if [ "$1" = Q ]; then echo "ACTION finish"; else echo "ACTION next"; fi
@@ -784,7 +786,7 @@ cmd_next() {
 		return 0
 	done
 	final_verify || return 0
-	[ "$(cfg REVIEW)" = none ] && { echo "ACTION finish"; return 0; }
+	[ "$(cfg REVIEW)" = none ] && { state_set BRANCH OFF; echo "ACTION finish"; return 0; }
 	case $(state_get BRANCH) in PASS | FIX | ESCALATE) echo "ACTION finish" ;; *) act_review BRANCH ;; esac
 }
 
@@ -1265,7 +1267,7 @@ cmd_report() {
 	echo "Report — $F on $(current_branch) ($(now))"
 	if is_quick; then
 		echo "  Q  $(state_get Q) $(state_detail Q)  (fix rounds: $(sfile_get rounds.Q))"
-		[ "$(cfg REVIEW)" = none ] && echo "Reviews: off (REVIEW=none) — no review ran"
+		{ [ "$(cfg REVIEW)" = none ] || [ "$(state_detail Q)" = "reviews off" ]; } && echo "Reviews: off (REVIEW=none) — no review ran"
 	else
 		echo "Tasks"
 		for id in $(task_ids "$(art tasks)"); do
@@ -1277,7 +1279,7 @@ cmd_report() {
 				*) printf '  %s  %-12s %s %s(fix rounds: %s)%s\n' "$id" "$st" "$title" "${d:+$d }" "$(sfile_get "rounds.$id")" "$(r=$(sfile_get "reason.$id"); [ -n "$r" ] && printf ' — %s' "$r")" ;;
 			esac
 		done
-		if [ "$(cfg REVIEW)" = none ]; then echo "Reviews: off (REVIEW=none) — no task or branch review ran"
+		if [ "$(cfg REVIEW)" = none ] || [ "$(state_get BRANCH)" = OFF ]; then echo "Reviews: off (REVIEW=none) — no task or branch review ran"
 		else echo "Branch review: $(state_get BRANCH | sed 's/^CLEARED$/not run since the last change/; s/^$/not run/')"; fi
 	fi
 	[ "$(cfg VERIFY)" = off ] && echo "Verify: OFF (VERIFY=off) — nothing proved the repo healthy; run .claude/scripts/loop.sh verify before you open the PR"

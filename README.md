@@ -193,13 +193,13 @@ Enforcement is **opt-in**: nothing constrains the main session unless it is runn
 
 | Platform | Status |
 |---|---|
-| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils) | **Tested.** `selftest.sh` passes 375/375 checks. Real headless runs in Claude Code 2.1.289 with every agent on haiku: `/al-quick` → `/al-approve brief` → build; `/al-spec` → `/al-approve spec` → `/al-plan` → `/al-approve plan` (one commit for plan + tasks) → `/al-implement --profile fast --model T001=haiku`; `/al-change` on a built feature → change request → `/al-approve change` → spec, plan and tasks revised with the done task untouched → build; a build paused mid-task and `/al-resume`d. |
+| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils) | **Tested.** `selftest.sh` passes 379/379 checks. Real headless runs in Claude Code 2.1.289 with every agent on haiku: `/al-quick` → `/al-approve brief` → build; `/al-spec` → `/al-approve spec` → `/al-plan` → `/al-approve plan` (one commit for plan + tasks) → `/al-implement --profile fast --model T001=haiku`; `/al-change` on a built feature → change request → `/al-approve change` → spec, plan and tasks revised with the done task untouched → build; a build paused mid-task and `/al-resume`d. |
 | macOS (bash 3.2, BSD tools) | **Not tested.** The scripts avoid bash-4 features and GNU-only flags, and pass under mawk. Run `./selftest.sh` once. |
 | Windows | Not supported natively. Use WSL. |
 | Claude Code desktop / IDE / cloud | **Not tested.** Same hooks and settings; only the CLI was exercised. |
 | Agents on sonnet/opus | **Not tested end to end in v0.2** (the real runs used haiku for cost). |
 
-`./selftest.sh` exercises every gate, check and hook in a throwaway repo with simulated agents and no model calls. It takes about a minute and a half and should print `all 375 checks passed`.
+`./selftest.sh` exercises every gate, check and hook in a throwaway repo with simulated agents and no model calls. It takes about a minute and a half and should print `all 379 checks passed`.
 
 `install.sh` is idempotent (re-run it to upgrade). It copies `.claude/{agents,skills,hooks,scripts,templates}`, keeps an existing `loop.conf` (a pre-v0.2 one gets a `loop.conf.v0.2` next to it), **merges** `.claude/settings.json` — your keys and rules stay, the kit's hook entries are replaced rather than duplicated, and the deny rules v0.1 added (edits of the kit, secret reads) are removed — and gitignores `.agent-loop/`, `.claude/worktrees/` and its backup folders. Anything it overwrites goes to `.claude/agent-loop-backup-<timestamp>/`. Your own templates go in `.claude/templates.local/<name>.md`.
 

@@ -641,6 +641,8 @@ $($L log T002 implementer "DONE T002 x")
 $($L next)"
 noreview "--review none beats plan.md, Review: always and Risk: high"
 has "report: reviews off (run flag)" "$($L finish)" "Reviews: off"
+has "…still off after the run ends (run flags gone)" "$($L report)" "Reviews: off"
+has "…and the feature is done, not 'branch review pending'" "$($L status)" "Next: done"
 
 # (c) /al-quick with REVIEW=none, from loop.conf and from the run flag
 for how in conf flag; do
@@ -658,6 +660,7 @@ $($L log Q quick-builder "DONE Q x")"
 	noreview "/al-quick with REVIEW=none ($how)"
 	has "/al-quick finishes ($how)" "$out_all" "ACTION finish"
 	has "report: reviews off ($how)" "$($L finish)" "Reviews: off"
+	has "quick report still off after the run ($how)" "$($L report)" "Reviews: off"
 	cp "$X/conf.rn" .claude/loop.conf; git diff --quiet || git commit -qam "chore: reviews back on"
 done
 
