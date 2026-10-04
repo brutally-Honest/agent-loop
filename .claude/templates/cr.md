@@ -8,6 +8,7 @@ created: {{DATE}}
 approved:
 approved-by:
 sha256:
+fingerprint:
 spec-applied:
 plan-applied:
 applied:

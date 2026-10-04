@@ -1,7 +1,7 @@
 ---
 name: spec
 description: Start a feature from a rough requirement — creates the branch (or a worktree), interviews you, and drafts specs/NNN-slug/spec.md as a draft. Re-run on a feature branch to keep refining the draft.
-argument-hint: "<rough requirement, in your words> [--worktree] [--supersedes NNN]"
+argument-hint: "<rough requirement, in your words> [--here | --worktree] [--supersedes NNN]"
 disable-model-invocation: true
 allowed-tools: Bash(.claude/scripts/loop.sh *) Bash(./.claude/scripts/loop.sh *)
 ---
@@ -19,15 +19,15 @@ Requirement, in the user's words: $ARGUMENTS
 - Write only `specs/<feature>/spec.md` and `research.md`. No plan, no code.
 
 ## 1. Branch — only when "Where things stand" shows no feature on this branch
-- If it shows a feature whose spec.md is **approved**: stop. Tell the user approved specs are frozen and changes go through `/amend`.
+- If it shows a feature whose spec.md is **approved**: stop. Tell the user changes to an approved spec go through `/change <what>` (edits outside the contract sections — Goal, Non-goals, ACs, Edge cases, Constraints — need nothing).
 - If it shows a **draft** spec: skip to step 2 and refine it with the new input.
 
 Otherwise ask ONE AskUserQuestion call with these questions:
-1. "Where should this work live?" — options `Local branch (Recommended)` and `Worktree`. Leave this question out and use a worktree only when the user's text explicitly asks for one (e.g. `--worktree`).
+1. "Where should this work live?" — options `New local branch (Recommended)`, `This branch (<current branch>)` and `Worktree`. Leave this question out when the user's text already says (`--here` = this branch, `--worktree`). Offer "This branch" only when the current branch is not the base branch.
 2. "What kind of change is this?" — feat / fix / refactor / chore, your best guess first.
 3. "Short name for the branch and folder?" — 2-3 kebab-case slugs you derive from the requirement.
 
-Then run `.claude/scripts/loop.sh new <kind> <slug>` adding `--worktree` if chosen and `--supersedes <NNN>` if the user passed it. It creates the branch `<kind>/<NNN-slug>` from the base branch plus `specs/<NNN-slug>/spec.md` (draft) and `research.md`.
+Then run `.claude/scripts/loop.sh new <kind> <slug>` adding `--here` (this branch) or `--worktree` if chosen, and `--supersedes <NNN>` if the user passed it. It creates the branch `<kind>/<NNN-slug>` from the base branch (or keeps the current one with `--here`) plus `specs/<NNN-slug>/spec.md` (draft) and `research.md`.
 If it prints `WORKTREE <path>`, call EnterWorktree with `path: <path>`. If that tool isn't available, tell the user to run `cd <path> && claude` and `/spec` there, and stop.
 
 ## 2. Interview

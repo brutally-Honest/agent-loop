@@ -22,6 +22,7 @@ al_init() {
 	TEST_CMD=""
 	BASE_BRANCH=""
 	SPECS_DIR="specs"
+	CONTRACT_SECTIONS="Goal|Non-goals|Acceptance criteria|Edge cases|Constraints"   # spec sections an approval covers
 	# profile keys stay unset unless loop.conf sets them, so cfg can tell "repo" from "profile"
 	unset $CFG_KEYS MAX_FIX_ROUNDS
 	QUICK_MAX_ACS=5
@@ -284,72 +285,232 @@ in_list()   { printf '%s\n' "$2" | grep -qx -- "$1"; }
 # --- features + artifacts -----------------------------------------------------
 
 resolve_feature() { # [id | NNN] -> sets F, or dies
-	local arg=${1:-} d br n
+	local arg=${1:-} d br n f
 	if [ -n "$arg" ]; then
 		if [ -d "$SPECS_DIR/$arg" ]; then F=$arg; return 0; fi
 		n=${arg%%-*}
 		for d in "$SPECS_DIR/$n"-*; do [ -d "$d" ] && { F=${d##*/}; return 0; }; done
-		die "no feature '$arg' under $SPECS_DIR/"
+		die "there is no feature '$arg' under $SPECS_DIR/.
+  do this: .claude/scripts/loop.sh status   (lists where you are)"
 	fi
-	br=$(current_branch) || die "detached HEAD: pass the feature id (e.g. 012)"
+	br=$(current_branch) || die "you're on a detached HEAD, so there is no feature to work on.
+  do this: git switch <the feature's branch>   (or pass the feature id, e.g. 012)"
+	# fast path: <kind>/NNN-slug
 	case ${br##*/} in
-		[0-9][0-9][0-9]-*) F=${br##*/} ;;
-		*) die "branch '$br' is not a feature branch (<kind>/NNN-slug) — check out one, or pass the feature id" ;;
+		[0-9][0-9][0-9]-*) if [ -d "$SPECS_DIR/${br##*/}" ]; then F=${br##*/}; return 0; fi ;;
 	esac
-	[ -d "$SPECS_DIR/$F" ] || die "branch $br has no $SPECS_DIR/$F/ folder"
+	# any other branch name: the feature whose spec/brief says branch: <this branch>
+	for d in "$SPECS_DIR"/[0-9][0-9][0-9]-*; do
+		[ -d "$d" ] || continue
+		for f in "$d/spec.md" "$d/brief.md"; do
+			[ -f "$f" ] && [ "$(fm_get "$f" branch)" = "$br" ] && { F=${d##*/}; return 0; }
+		done
+	done
+	die "branch '$br' has no feature.
+  do this: /spec --here <requirement>  (or /quick --here …) to start one on this branch, or git switch to the feature's branch"
 }
 
 art() { printf '%s/%s/%s.md' "$SPECS_DIR" "$F" "$1"; }   # spec|plan|tasks|brief|research
 is_quick() { [ -f "$(art brief)" ]; }
 
-spec_fp() { # fingerprint of the contract sections: change any of them and downstream approvals go stale
-	local f=$1 s
-	for s in "Goal" "Non-goals" "Acceptance criteria" "Edge cases" "Constraints"; do
-		printf '## %s\n' "$s"
-		section "$f" "$s" | sed 's/[[:space:]]*$//'
-	done | sha256
+# --- approvals ------------------------------------------------------------------
+#
+# An artifact is approved when its frontmatter says so AND the latest approval commit for
+# it (made by approve.sh from the user's keystroke) recorded a fingerprint equal to the
+# file's CURRENT contract fingerprint. The fingerprint covers only the contract sections,
+# so later edits elsewhere (typos, notes, other commits) keep the approval. The record lives
+# in the commit body, so frontmatter edited by hand can't validate itself.
+
+art_kind() { # file -> spec | plan | tasks | brief | CR-nnn
+	local b=${1##*/}; b=${b%.md}
+	printf '%s\n' "$b"
 }
 
-# art_state FILE -> missing | draft | approved | tampered:<why> | <other status>
-# "approved" is only trusted when the stored hash matches the body AND the file is
-# committed AND the last commit that touched it is an approval commit made by approve.sh.
+contract_secs() { # kind -> |-separated contract sections
+	case $1 in
+		spec) printf '%s\n' "$CONTRACT_SECTIONS" ;;
+		brief) echo "Change|Acceptance|Out of scope|Steps" ;;
+		plan) echo "Approach|Alternatives considered|Design|AC coverage|Test strategy" ;;
+		tasks) echo "Tasks" ;;
+	esac
+}
+
+contract_fp_text() { # kind; stdin = the whole file -> fingerprint of its contract
+	local k=$1 c s secs
+	c=$(strip_fm | strip_noise)
+	case $k in
+		CR-*) printf '%s\n' "$c" | sha256; return ;;
+	esac
+	secs=$(contract_secs "$k")
+	(
+		IFS='|'
+		for s in $secs; do
+			printf '## %s\n' "$s"
+			printf '%s\n' "$c" | sec "$s" | sed 's/[[:space:]]*$//'
+		done
+	) | sha256
+}
+contract_fp() { contract_fp_text "$(art_kind "$1")" < "$1"; }
+spec_fp() { contract_fp "$1"; }
+
+approval_sha() { # file [kind] -> the latest commit that approved this artifact ('' if none)
+	local k=${2:-$(art_kind "$1")}
+	git log --format='%H%x09%s' -- "$1" 2>/dev/null | K="$k" awk -F '\t' '
+		index($2, ": approve ") || index($2, ": auto-approve ") {
+			s = " " $2 " "; k = ENVIRON["K"]
+			if (k ~ /^CR-/) { if (index(s, " " k " ")) { print $1; exit } }
+			else if (s ~ ("(approve|[+]) " k " v[0-9]")) { print $1; exit }
+		}'
+}
+
+approval_rec() { # sha key [kind] -> a "key [kind] value" line from that approval commit's body
+	git log -1 --format=%B "$1" 2>/dev/null | A="$2" B="${3:-}" awk '
+		$1 == ENVIRON["A"] && (ENVIRON["B"] == "" ? NF == 2 : $2 == ENVIRON["B"]) { print $NF; exit }'
+}
+
+link_rec() { # file key -> what the file's approval commit recorded for an upstream link (frontmatter for v0.1 approvals)
+	local sha v
+	sha=$(approval_sha "$1")
+	[ -n "$sha" ] && v=$(approval_rec "$sha" "$2")
+	[ -n "${v:-}" ] || v=$(fm_get "$1" "$2")
+	printf '%s\n' "$v"
+}
+
+# art_state FILE -> missing | draft | approved | changed | unproven | invalid | <other status>
+#   changed   the contract changed since the approval (art_why says what)
+#   unproven  the frontmatter says approved, but no approval commit records it
+#   invalid   tasks.md (AUTO_APPROVE_TASKS=on) no longer passes the checks
 art_state() {
-	local f=$1 st subj
+	local f=$1 st k sha rec cur
 	[ -f "$f" ] || { echo missing; return; }
 	st=$(fm_get "$f" status); [ -n "$st" ] || st=draft
-	if [ "$st" = approved ]; then
-		[ "$(fm_get "$f" sha256)" = "$(body_hash "$f")" ] || { echo "tampered:edited-after-approval"; return; }
-		git ls-files --error-unmatch "$f" >/dev/null 2>&1 && git diff --quiet HEAD -- "$f" 2>/dev/null \
-			|| { echo "tampered:uncommitted-approval"; return; }
-		subj=$(git log -1 --format=%s -- "$f")
-		case $subj in
-			*": approve "* | *": auto-approve "*) ;;
-			*) echo "tampered:last-commit-is-not-an-approval"; return ;;
-		esac
+	[ "$st" = approved ] || { echo "$st"; return; }
+	k=$(art_kind "$f")
+	sha=$(approval_sha "$f" "$k")
+	[ -n "$sha" ] || { echo unproven; return; }
+	if [ "$k" = tasks ] && [ "$(cfg AUTO_APPROVE_TASKS)" = on ] && [ -n "$(approval_rec "$sha" fingerprint tasks)" ]; then
+		tasks_problems "$f" "$sha" >/dev/null; case $? in 0) echo approved ;; 1) echo changed ;; *) echo invalid ;; esac
+		return
 	fi
-	echo "$st"
+	rec=$(approval_rec "$sha" fingerprint "$k")
+	if [ -n "$rec" ]; then cur=$(contract_fp "$f")
+	else   # approved by v0.1: the whole body was hashed
+		rec=$(approval_rec "$sha" sha256); [ -n "$rec" ] || rec=$(fm_get "$f" sha256)
+		cur=$(body_hash "$f")
+	fi
+	if [ "$rec" = "$cur" ]; then echo approved; else echo changed; fi
 }
 
-chain_errors() { # up-to: spec|plan|tasks|brief -> prints problems; returns 1 if any
+tasks_problems() { # tasks.md approval-sha -> 0 ok | 1 a done task or a reused id (printed) | 2 fails the checks (printed)
+	local f=$1 sha=$2 old body t ids oldids maxold
+	command -v check_tasks >/dev/null 2>&1 || . "$AL_SCRIPTS_DIR/validate.sh"
+	old=$(git show "$sha:$f" 2>/dev/null | strip_fm | strip_noise)
+	body=$(doc "$f")
+	oldids=$(printf '%s\n' "$old" | task_ids_stdin)
+	ids=$(printf '%s\n' "$body" | task_ids_stdin)
+	for t in $(done_tasks); do
+		in_list "$t" "$oldids" || continue
+		[ "$(printf '%s\n' "$old" | task_block_stdin "$t")" = "$(printf '%s\n' "$body" | task_block_stdin "$t")" ] \
+			|| { echo "$t is done — its block changed since the approval; put rework in a new task"; return 1; }
+	done
+	maxold=$(printf '%s\n' $oldids | sort | tail -1)
+	for t in $ids; do
+		in_list "$t" "$oldids" && continue
+		[ "$t" \> "$maxold" ] || { echo "$t is a new task with a used id — number new tasks after $maxold"; return 1; }
+	done
+	check_tasks "$f" >/dev/null 2>&1 || { check_tasks "$f"; return 2; }
+	return 0
+}
+
+contract_changes() { # file sha -> what changed in the contract since that approval, comma-separated
+	local f=$1 sha=$2 k old cur h ids id o n s secs out=""
+	k=$(art_kind "$f")
+	old=$(git show "$sha:$f" 2>/dev/null | strip_fm | strip_noise)
+	cur=$(doc "$f")
+	case $k in spec) h="Acceptance criteria" ;; brief) h="Acceptance" ;; *) h="" ;; esac
+	if [ -n "$h" ]; then
+		o=$(printf '%s\n' "$old" | sec "$h"); n=$(printf '%s\n' "$cur" | sec "$h")
+		ids=$( { printf '%s\n' "$o" "$n" | ac_active; printf '%s\n' "$o" "$n" | ac_struck; } | sort -u | sort -t C -k 2n)
+		for id in $ids; do
+			ol=$(printf '%s\n' "$o" | ac_line "$id"); nl=$(printf '%s\n' "$n" | ac_line "$id")
+			if [ -z "$ol" ]; then out="$out, $id added"
+			elif [ -z "$nl" ]; then out="$out, $id deleted"
+			elif [ "$ol" != "$nl" ]; then out="$out, $id changed"; fi
+		done
+	fi
+	secs=$(contract_secs "$k")
+	if [ -n "$secs" ]; then
+		IFS='|'
+		for s in $secs; do
+			[ "$s" = "$h" ] && continue
+			[ "$(printf '%s\n' "$old" | sec "$s")" = "$(printf '%s\n' "$cur" | sec "$s")" ] || out="$out, $s changed"
+		done
+		unset IFS
+	fi
+	[ -n "$out" ] || out=", its contract changed"
+	printf '%s\n' "${out#, }"
+}
+
+art_why() { # file state -> one or two plain lines: what is wrong, and what to type
+	local f=$1 st=$2 k sha n
+	k=$(art_kind "$f"); n=${f##*/}
+	case $st in
+		approved) return 0 ;;
+		missing)
+			case $k in
+				spec) echo "there is no spec yet. do this: /spec <requirement>" ;;
+				plan) echo "there is no plan yet. do this: /plan" ;;
+				tasks) echo "there is no tasks.md yet. do this: /plan (the planner writes it)" ;;
+				*) echo "$n does not exist" ;;
+			esac ;;
+		draft)
+			case $k in
+				plan) echo "plan.md is a draft. do this: review it, then /approve plan (or /plan to revise it)" ;;
+				tasks) echo "tasks.md is a draft. do this: fix what '.claude/scripts/loop.sh check tasks' lists (by hand or with /plan), then /approve tasks" ;;
+				*) echo "$n is a draft. do this: review it, then /approve $k" ;;
+			esac ;;
+		unproven) echo "$n says approved, but no approval of yours records it. do this: /approve $k" ;;
+		invalid)
+			sha=$(approval_sha "$f" "$k")
+			echo "tasks.md was edited and no longer passes the checks:"
+			tasks_problems "$f" "$sha" | sed 's/^/  /'
+			echo "  do this: fix tasks.md (by hand or with /plan), then /implement" ;;
+		changed)
+			sha=$(approval_sha "$f" "$k")
+			if [ "$k" = tasks ] && [ "$(cfg AUTO_APPROVE_TASKS)" = on ]; then
+				echo "$(tasks_problems "$f" "$sha" | head -1). do this: git checkout $(git rev-parse --short "$sha") -- $f  (and add a new task for the rework)"
+			else
+				echo "$(contract_changes "$f" "$sha") since you approved $n. do this: /change --adopt  (turns your edit into a change request) — or undo it: git checkout $(git rev-parse --short "$sha") -- $f"
+			fi ;;
+		*) echo "$n has status '$st'. do this: /approve $k" ;;
+	esac
+}
+
+chain_errors() { # up-to: spec|plan|tasks|brief -> prints what's in the way (plain lines); returns 1 if anything
 	local e=0 s p t st
 	if [ "$1" = brief ]; then
-		st=$(art_state "$(art brief)"); [ "$st" = approved ] || { echo "brief.md is $st"; return 1; }
+		st=$(art_state "$(art brief)"); [ "$st" = approved ] || { art_why "$(art brief)" "$st"; return 1; }
 		return 0
 	fi
 	s=$(art spec); st=$(art_state "$s")
-	[ "$st" = approved ] || { echo "spec.md is $st"; e=1; }
+	[ "$st" = approved ] || { art_why "$s" "$st"; e=1; }
 	[ "$1" = spec ] && return $e
 	p=$(art plan); st=$(art_state "$p")
-	if [ "$st" != approved ]; then echo "plan.md is $st"; e=1
-	elif [ $e = 0 ] && [ "$(fm_get "$p" spec-fingerprint)" != "$(spec_fp "$s")" ]; then
-		echo "plan.md was approved against an older spec (its contract sections changed)"; e=1
+	if [ "$st" != approved ]; then art_why "$p" "$st"; e=1
+	elif [ $e = 0 ] && [ "$(link_rec "$p" spec-fingerprint)" != "$(contract_fp "$s")" ]; then
+		echo "plan.md was approved for an earlier version of the spec. do this: /plan to revise it, then /approve plan"; e=1
 	fi
 	[ "$1" = plan ] && return $e
 	t=$(art tasks); st=$(art_state "$t")
-	if [ "$st" != approved ]; then echo "tasks.md is $st"; e=1
+	if [ "$st" != approved ]; then art_why "$t" "$st"; e=1
 	elif [ $e = 0 ]; then
-		[ "$(fm_get "$t" plan-sha256)" = "$(fm_get "$p" sha256)" ] || { echo "tasks.md was approved against an older plan"; e=1; }
-		[ "$(fm_get "$t" spec-fingerprint)" = "$(spec_fp "$s")" ] || { echo "tasks.md was approved against an older spec"; e=1; }
+		if [ -n "$(link_rec "$t" plan-fingerprint)" ]; then
+			[ "$(link_rec "$t" plan-fingerprint)" = "$(contract_fp "$p")" ] \
+				|| { echo "tasks.md was approved for an earlier version of the plan. do this: /plan to revise it, then /approve tasks"; e=1; }
+		else   # v0.1: tasks recorded the plan's whole-body hash
+			[ "$(fm_get "$t" plan-sha256)" = "$(fm_get "$p" sha256)" ] \
+				|| { echo "tasks.md was approved for an earlier version of the plan. do this: /plan to revise it, then /approve tasks"; e=1; }
+		fi
 	fi
 	return $e
 }
@@ -396,7 +557,7 @@ trailer_ids() { # task ids that have a "Task: Tnnn" commit on this branch since 
 	git log "$b..HEAD" --format=%B 2>/dev/null | awk '/^Task: T[0-9][0-9][0-9]$/ { print $2 }' | sort -u
 }
 
-done_tasks() { # ids reviewed PASS (falls back to commit trailers when there is no state yet, e.g. a fresh clone)
+done_tasks() { # ids that passed (falls back to commit trailers when there is no state yet, e.g. a fresh clone)
 	if [ -f "$(sdir)/state" ]; then
 		awk -F '\t' '{ s[$1] = $2 } END { for (k in s) if (s[k] == "PASS" && k ~ /^T[0-9]/) print k }' "$(sdir)/state" | sort
 	else

@@ -26,10 +26,11 @@ short() { git rev-parse --short "${1:-HEAD}" 2>/dev/null; }
 soft_feature() { F=$( (resolve_feature "${1:-}" && printf '%s' "$F") 2>/dev/null ) && [ -n "$F" ]; }
 VLOG() { if [ -n "${F:-}" ]; then ensure_state; printf '%s/verify.log' "$(sdir)"; else mkdir -p "$STATE_ROOT"; printf '%s/verify.log' "$STATE_ROOT"; fi; }
 
-render() { # template dest   (uses F KIND TITLE SUP CR)
-	local src="$AL_KIT_DIR/templates/$1"
+render() { # template dest   (uses F KIND TITLE SUP CR BRANCH); .claude/templates.local/<name> wins over the kit's
+	local src="$AL_KIT_DIR/templates.local/$1"
+	[ -f "$src" ] || src="$AL_KIT_DIR/templates/$1"
 	[ -f "$src" ] || die "missing template $src"
-	sed -e "s|{{FEATURE}}|$F|g" -e "s|{{KIND}}|${KIND:-}|g" -e "s|{{DATE}}|$(today)|g" \
+	sed -e "s|{{FEATURE}}|$F|g" -e "s|{{KIND}}|${KIND:-}|g" -e "s|{{DATE}}|$(today)|g" -e "s|{{BRANCH}}|${BRANCH:-}|g" \
 		-e "s|{{TITLE}}|${TITLE:-$F}|g" -e "s|{{SUPERSEDES}}|${SUP:-}|g" -e "s|{{CR}}|${CR:-}|g" -e 's/^\([a-z-]*\): $/\1:/' "$src" > "$2"
 }
 
@@ -106,11 +107,11 @@ next_number() {
 }
 
 cmd_new() {
-	local kind="" slug="" wt=0 quick=0 base="" br target path d
+	local kind="" slug="" wt=0 quick=0 here=0 base="" br target path d
 	SUP=""
 	while [ $# -gt 0 ]; do
 		case $1 in
-			--worktree) wt=1 ;; --quick) quick=1 ;;
+			--worktree) wt=1 ;; --quick) quick=1 ;; --here) here=1 ;;
 			--base) base=${2:-}; shift ;;
 			--supersedes) SUP=${2:-}; shift ;;
 			-*) die "unknown flag $1" ;;
@@ -132,8 +133,17 @@ cmd_new() {
 	n=$(next_number); F="$n-$slug"; KIND=$kind
 	TITLE=$(printf '%s' "$slug" | tr '-' ' '); TITLE="$(printf '%s' "${TITLE:0:1}" | tr '[:lower:]' '[:upper:]')${TITLE:1}"
 	br="$kind/$F"
-	git show-ref --verify --quiet "refs/heads/$br" && die "branch $br already exists"
-	if [ $wt = 1 ]; then
+	if [ $here = 1 ]; then
+		[ $wt = 0 ] || die "--here and --worktree don't go together: --here uses the branch you're on"
+		br=$(current_branch) || die "--here needs a branch, but you're on a detached HEAD.
+  do this: git switch -c <branch name>, then try again"
+		[ "$br" != "$(base_branch)" ] || die "--here would put the feature on $br, the base branch.
+  do this: git switch -c <branch name>, then try again (or leave out --here to get $kind/$F)"
+		d=$( (resolve_feature && printf '%s' "$F") 2>/dev/null ) && die "branch $br already holds feature $d — one feature per branch.
+  do this: git switch -c <another branch>, then try again"
+		target=$REPO
+	elif git show-ref --verify --quiet "refs/heads/$br"; then die "branch $br already exists"
+	elif [ $wt = 1 ]; then
 		path=".claude/worktrees/$F"
 		git check-ignore -q "$path/x" || die ".claude/worktrees/ is not gitignored — add it to .gitignore first (install.sh does this)"
 		git worktree add -q -b "$br" "$path" "$base" || die "git worktree add failed"
@@ -143,6 +153,7 @@ cmd_new() {
 		git switch -q -c "$br" "$base" || die "git switch -c $br $base failed"
 		target=$REPO
 	fi
+	BRANCH=$br
 	mkdir -p "$target/$SPECS_DIR/$F"
 	if [ $quick = 1 ]; then render brief.md "$target/$SPECS_DIR/$F/brief.md"
 	else render spec.md "$target/$SPECS_DIR/$F/spec.md"; fi
@@ -171,7 +182,7 @@ next_step() {
 		case $st in
 			draft) echo "review $(art brief), then /approve brief (it builds right after)" ;;
 			approved) [ "$(state_get Q)" = PASS ] && echo "done — read the report (loop.sh report) and open the PR" || echo "/implement" ;;
-			*) echo "brief.md is $st — /amend, or reopen it from a terminal: .claude/scripts/approve.sh reopen brief --reason '…'" ;;
+			*) art_why "$(art brief)" "$st" ;;
 		esac
 		return
 	fi
@@ -181,34 +192,33 @@ next_step() {
 		missing) echo "/spec <requirement>"; return ;;
 		draft) echo "review $(art spec), then /approve spec (or keep refining with /spec)"; return ;;
 		approved) ;;
-		*) echo "spec.md is $st — /amend, or reopen it from a terminal: .claude/scripts/approve.sh reopen spec --reason '…'"; return ;;
+		*) art_why "$(art spec)" "$st"; return ;;
 	esac
 	st=$(art_state "$(art plan)")
 	case $st in
 		missing) echo "/plan"; return ;;
-		draft) echo "/plan (draft or reopened plan), then /approve plan"; return ;;
+		draft)
+			if check_plan "$(art plan)" approve >/dev/null 2>&1 && check_tasks "$(art tasks)" >/dev/null 2>&1; then
+				echo "review $(art plan) and tasks.md, then /approve plan (it approves the tasks too)"
+			else echo "/plan to finish the draft plan (loop.sh check plan / check tasks list what's missing), then /approve plan"; fi
+			return ;;
 		approved) ;;
-		*) echo "plan.md is $st — /amend, or reopen it: .claude/scripts/approve.sh reopen plan --reason '…'"; return ;;
+		*) art_why "$(art plan)" "$st"; return ;;
 	esac
-	ce=$(chain_errors plan) || { echo "$ce — /plan to revise"; return; }
+	ce=$(chain_errors plan) || { echo "$ce"; return; }
 	st=$(art_state "$(art tasks)")
-	case $st in
-		missing) echo "/plan — the planner writes tasks.md"; return ;;
-		draft) echo "tasks.md is a draft — fix what '.claude/scripts/loop.sh check tasks' reports (by hand, or /plan), then /approve tasks"; return ;;
-		approved) ;;
-		*) echo "tasks.md is $st — /amend"; return ;;
-	esac
+	[ "$st" = approved ] || { art_why "$(art tasks)" "$st"; return; }
 	ce=$(chain_errors tasks) || { echo "$ce"; return; }
 	q=$(open_questions | tr '\n' ' ')
-	[ -n "$q" ] && { echo "answer $q in $(art research) (change '(open)' to '(answered)'), then /implement"; return; }
+	[ -n "$q" ] && { echo "answer $q: /answer <Qn> <your answer>, then /resume"; return; }
 	for c in $(task_ids "$(art tasks)"); do
 		case $(state_get "$c") in
-			STOPPED) echo "$c hit the fix-round limit: its last attempt is committed on top of $(short "$(sfile_get "base.$c")"). Fix it by hand, or drop it (git reset --hard $(short "$(sfile_get "base.$c")")) and /amend the task; then /implement restarts $c from HEAD"; return ;;
-			ESCALATED) echo "$c needs your decision (the reviewer's ESCALATE): fix the spec via /amend, or fix the code yourself; then /implement"; return ;;
+			STOPPED) echo "$c hit the fix-round limit: its last attempt is committed on top of $(short "$(sfile_get "base.$c")"). Fix it by hand and /resume, or drop it (git reset --hard $(short "$(sfile_get "base.$c")")), edit the task in tasks.md, and /resume"; return ;;
+			ESCALATED) echo "$c needs your decision (the reviewer's ESCALATE): /change the spec, or fix the code yourself; then /resume"; return ;;
 		esac
 	done
 	for c in $(task_ids "$(art tasks)"); do
-		case $(state_get "$c") in PASS | NEEDS-HUMAN) ;; *) echo "/implement"; return ;; esac
+		case $(state_get "$c") in PASS | NEEDS-HUMAN) ;; *) in_list "$c" "$(done_tasks)" || { echo "/implement"; return; } ;; esac
 	done
 	local nh=""
 	for c in $(task_ids "$(art tasks)"); do [ "$(state_get "$c")" = NEEDS-HUMAN ] && nh="$nh $c"; done
@@ -250,7 +260,8 @@ pending_crs() { local c; for c in $(cr_files); do [ "$(fm_get "$c" status)" = ap
 gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan is approved, only tasks.md is open
 	local e p t st tst mode=new
 	is_quick && die "$F is a /quick feature (brief.md) — it has no plan"
-	e=$(chain_errors spec) || die "the planner stops here — $e. Approve the spec first: /approve spec"
+	e=$(chain_errors spec) || die "the planner can't start yet:
+  $e"
 	p=$(art plan); t=$(art tasks); st=$(art_state "$p"); tst=$(art_state "$t")
 	case $st in
 		missing) render plan.md "$p" ;;
@@ -259,9 +270,9 @@ gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan i
 			case $tst in
 				approved) die "plan.md and tasks.md are already approved — to change them, use /change" ;;
 				missing | draft) mode=tasks ;;
-				*) die "tasks.md is $tst — /change, or reopen it from a terminal: .claude/scripts/approve.sh reopen tasks --reason '…'" ;;
+				*) die "$(art_why "$t" "$tst")" ;;
 			esac ;;
-		*) die "plan.md is $st — /change, or reopen it from a terminal: .claude/scripts/approve.sh reopen plan --reason '…'" ;;
+		*) die "$(art_why "$p" "$st")" ;;
 	esac
 	[ -f "$t" ] || render tasks.md "$t"
 	[ "$mode" = new ] && [ -n "$(fm_get "$t" previous)" ] && mode=amend
@@ -275,13 +286,16 @@ gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan i
 
 gate_implement() {
 	local e c br id st
-	if is_quick; then e=$(chain_errors brief) || die "not ready to build — $e. /approve brief first"
-	else e=$(chain_errors tasks) || die "not ready to build — $(printf '%s' "$e" | tr '\n' ';') (see: .claude/scripts/loop.sh status)"; fi
-	c=$(draft_crs | head -1); [ -z "$c" ] || die "$c is waiting for a decision — /approve change, or delete it"
-	br=$(current_branch); [ "$br" != "$(base_branch)" ] || die "you're on $br — check out the feature branch"
+	if is_quick; then e=$(chain_errors brief); else e=$(chain_errors tasks); fi || die "not ready to build:
+$(printf '%s\n' "$e" | sed 's/^/  /')"
+	c=$(draft_crs | head -1); [ -z "$c" ] || die "$c is waiting for your decision.
+  do this: /approve change   (or edit it, or delete the file)"
+	br=$(current_branch); [ "$br" != "$(base_branch)" ] || die "you're on $br, not on the feature's branch.
+  do this: git switch <the feature's branch>"
 	[ -n "$VERIFY_CMD" ] || die "$(verify_unset_msg)"
 	autocommit_research >/dev/null
-	tree_clean || die "working tree not clean — commit or stash first: $(git status --short | head -5 | tr '\n' ' ')"
+	tree_clean || die "the working tree has uncommitted changes: $(git status --short | head -5 | tr '\n' ' ')
+  do this: commit or stash them, then /implement again"
 	echo "GATE implement: OK"
 	echo "FEATURE $F"
 	echo "KIND $(fm_get "$(art spec)" kind)$(fm_get "$(art brief)" kind)"
@@ -301,14 +315,14 @@ gate_amend() {
 	if is_quick; then f=$(art brief); else f=$(art spec); fi
 	st=$(art_state "$f")
 	case $st in
-		approved) ;;
+		approved | changed) ;;
 		draft) die "${f##*/} is still a draft — just edit it (/spec or /quick); a change request is only for approved work" ;;
 		missing) die "no ${f##*/} for $F" ;;
-		*) n=${f##*/}; die "$n is $st (edited after approval without a change request). If that edit is what you want: run '.claude/scripts/approve.sh reopen ${n%.md} --reason \"…\"' in a terminal, then /approve it again" ;;
+		*) die "$(art_why "$f" "$st")" ;;
 	esac
 	git cat-file -e "$(base_branch):$f" 2>/dev/null \
 		&& die "$F is already merged into $(base_branch) — changes now are a new feature: /spec --supersedes ${F%%-*} <the change>"
-	for c in "$STATE_ROOT/$F/lock"; do [ -f "$c" ] && echo "NOTE a run lock exists (session $(cat "$c")) — if a build is running, stop it first"; done
+	[ -f "$STATE_ROOT/$F/lock" ] && echo "NOTE a build is running for $F — it pauses when you type; /resume after the change"
 	echo "GATE amend: OK"
 	echo "FEATURE $F"
 	echo "MODEL $(cfg MODEL_IMPACT)"
@@ -347,7 +361,7 @@ cmd_check() {
 		brief) resolve_feature "${1:-}"; f=$(art brief); out=$(check_brief "$f"); rc=$? ;;
 		*) die "usage: check spec|plan|tasks|brief [--draft] | check change [CR-nnn]" ;;
 	esac
-	if [ $rc = 0 ]; then echo "OK: $f passes the $mode checks"; else echo "NOT READY: $f"; printf '%s\n' "$out"; fi
+	if [ $rc = 0 ]; then echo "OK: $f passes the $mode checks"; [ -n "$out" ] && printf '%s\n' "$out"; else echo "NOT READY: $f"; printf '%s\n' "$out"; fi
 	return $rc
 }
 
@@ -391,11 +405,13 @@ post_task() { # id [quick|full] -> 0 ok | 1 + problems.  quick = no verify (used
 	tree_clean || pe "working tree not clean: $(git status --short | head -5 | tr '\n' ' ')"
 	commits=$(git rev-list "$base..HEAD")
 	[ -n "$commits" ] || pe "no new commit since $(short "$base")"
-	for c in $commits; do
-		msg=$(git log -1 --format=%B "$c")
-		printf '%s\n' "$msg" | grep -qx "Task: $id" || pe "commit $(short "$c") lacks the trailer 'Task: $id'"
-		printf '%s\n' "$msg" | grep -qx "Feature: $F" || pe "commit $(short "$c") lacks the trailer 'Feature: $F'"
-	done
+	if [ "$(cfg TRAILERS)" != off ]; then
+		for c in $commits; do
+			msg=$(git log -1 --format=%B "$c")
+			printf '%s\n' "$msg" | grep -qx "Task: $id" || pe "commit $(short "$c") lacks the trailer 'Task: $id'"
+			printf '%s\n' "$msg" | grep -qx "Feature: $F" || pe "commit $(short "$c") lacks the trailer 'Feature: $F'"
+		done
+	fi
 	while IFS= read -r p; do
 		[ -n "$p" ] || continue
 		case $p in
@@ -447,8 +463,14 @@ $(tail -25 "$(VLOG)")"
 		fi
 	fi
 	sfile_set "watch.$id" "$w"
+	[ "$mode" = full ] && [ $PE = 0 ] && record_commits "$id" "$commits"
 	[ -n "$w" ] && printf '%s' "$w"
 	return $PE
+}
+
+record_commits() { # id "shas" -> .agent-loop/<f>/commits ("sha task" lines): the task<->commit map, trailers or not
+	local m; m="$(sdir)/commits"; ensure_state
+	{ [ -f "$m" ] && I="$1" awk '$2 != ENVIRON["I"]' "$m"; for c in $2; do printf '%s %s\n' "$c" "$1"; done; } > "$m.new" && mv "$m.new" "$m"
 }
 
 bump() { # id source -> prints ACTION
@@ -809,9 +831,13 @@ cmd_task() { # the context pack: everything one task needs, so agents read more 
 	echo; echo "## Recent task commits"
 	git log "$b..HEAD" --grep='^Task: ' -3 --format='@@%h %s%n%b' 2>/dev/null \
 		| awk '/^@@/ { print "  " substr($0, 3); want = 1; next } want && NF && $0 !~ /^[A-Za-z-]+: / { print "      " $0; want = 0 }'
-	echo; echo "COMMIT TRAILERS (required, as the last lines of every commit message):"
-	echo "Task: $id"; echo "Feature: $F"
-	[ "$id" = Q ] || echo "AC: $(task_field "$(art tasks)" "$id" AC)"
+	if [ "$(cfg TRAILERS)" = off ]; then
+		echo; echo "COMMIT TRAILERS: off (TRAILERS=off) — write a normal commit message, no trailers"
+	else
+		echo; echo "COMMIT TRAILERS (required, as the last lines of every commit message):"
+		echo "Task: $id"; echo "Feature: $F"
+		[ "$id" = Q ] || echo "AC: $(task_field "$(art tasks)" "$id" AC)"
+	fi
 	if [ -n "$TEST_CMD" ]; then echo "TESTS run only the tests this task touches: .claude/scripts/loop.sh test <args>   ($TEST_CMD)"
 	else echo "TESTS run only the tests this task touches, with the repo's test command scoped to the packages you change"; fi
 }
@@ -888,9 +914,17 @@ cmd_impact() {
 				printf '  task %s %-12s %s\n' "$t" "$st" "$(task_title "$(art tasks)" "$t")"
 			done
 		fi
-		git log "$b..HEAD" --format='@@%h %s%n%B' | A="$a" awk '
-			/^@@/ { c = substr($0, 3); next }
-			/^AC:/ { n = split($0, x, /[^A-Za-z0-9]+/); for (i = 1; i <= n; i++) if (x[i] == ENVIRON["A"]) print "  commit " c }' | sort -u
+		{
+			git log "$b..HEAD" --format='@@%h %s%n%B' | A="$a" awk '
+				/^@@/ { c = substr($0, 3); next }
+				/^AC:/ { n = split($0, x, /[^A-Za-z0-9]+/); for (i = 1; i <= n; i++) if (x[i] == ENVIRON["A"]) print "  commit " c }'
+			# commits recorded by the loop (the only map when TRAILERS=off)
+			if [ -f "$(sdir)/commits" ] && [ -f "$(art tasks)" ]; then
+				while read -r c t; do
+					task_field "$(art tasks)" "$t" AC | ac_refs | grep -qx "$a" && git log -1 --format="  commit %h %s" "$c" 2>/dev/null
+				done < "$(sdir)/commits"
+			fi
+		} | sort -u
 	done
 }
 

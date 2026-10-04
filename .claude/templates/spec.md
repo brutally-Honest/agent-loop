@@ -5,6 +5,7 @@ status: draft
 version: 1
 created: {{DATE}}
 supersedes: {{SUPERSEDES}}
+branch: {{BRANCH}}
 approved:
 approved-by:
 sha256:

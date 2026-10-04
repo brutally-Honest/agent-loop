@@ -5,9 +5,11 @@ mode: quick
 status: draft
 version: 1
 created: {{DATE}}
+branch: {{BRANCH}}
 approved:
 approved-by:
 sha256:
+fingerprint:
 ---
 # {{TITLE}}
 

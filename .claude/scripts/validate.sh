@@ -6,6 +6,7 @@
 
 _e=0
 err() { printf '  - %s\n' "$*"; _e=1; }
+wrn() { printf '  ! warning: %s\n' "$*"; }   # reported, never a refusal
 
 _markers() { # file -> one error per unresolved marker (comments are ignored)
 	local m
@@ -56,7 +57,8 @@ check_spec() { # file [draft|approve]
 	local f=$1 mode=${2:-approve} txt ids struck dup
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
-	_need_sections "$f" "Problem" "Goal" "Non-goals" "Acceptance criteria" "Edge cases"
+	# only Goal and the ACs are required; every other section (yours included) is optional and kept
+	_need_sections "$f" "Goal" "Acceptance criteria"
 	txt=$(_ac_text "$f")
 	ids=$(printf '%s\n' "$txt" | ac_active)
 	struck=$(printf '%s\n' "$txt" | ac_struck)
@@ -95,7 +97,7 @@ check_plan() { # file [draft|approve]
 	for id in $(doc "$f" | ac_refs); do in_list "$id" "$all" || err "plan mentions $id, which is not in spec.md"; done
 	lines=$(fm_body "$f" | wc -l | tr -d ' ')
 	max=$(cfg PLAN_MAX_LINES)
-	[ "$lines" -le "$max" ] || err "plan is $lines lines; keep it under $max (PLAN_MAX_LINES): summarise and point at code"
+	[ "$lines" -le "$max" ] || wrn "plan is $lines lines, over PLAN_MAX_LINES=$max: summarise and point at code"
 	section "$f" "Test strategy" | grep -qE '[0-9]+ ?%' && err "'## Test strategy' sets a coverage percentage — name the behaviours and edge cases to test instead"
 	if [ "$mode" != draft ]; then
 		undecided=$(section "$f" "Open questions" | grep -E '^[[:space:]]*[-*][[:space:]]*(\*\*)?Q[0-9]+' | grep -v 'decided:')
@@ -232,7 +234,7 @@ check_brief() { # file
 	local f=$1 ids n steps ns
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
-	_need_sections "$f" "Change" "Acceptance" "Out of scope" "Approach" "Steps"
+	_need_sections "$f" "Change" "Acceptance"
 	ids=$(_ac_text "$f" | ac_active)
 	n=$(printf '%s\n' $ids | grep -c .)
 	[ "$n" -ge 1 ] || err "no acceptance criteria — add lines like: - **AC1** — When <trigger>, the system shall <result>."
@@ -242,7 +244,6 @@ check_brief() { # file
 	_ids_kept "$f"
 	steps=$(section "$f" "Steps" | grep -E '^[[:space:]]*[-*][[:space:]]+(\*\*)?S[0-9]+')
 	ns=$(printf '%s\n' "$steps" | grep -c .)
-	[ "$ns" -ge 1 ] || err "no steps — add lines like: - **S1** — <what> — Tests: <behaviour tests>"
 	[ "$ns" -le "$QUICK_MAX_STEPS" ] || err "too big for /quick: $ns steps (max $QUICK_MAX_STEPS) — use /spec for this one"
 	printf '%s\n' "$steps" | grep -v 'Tests:' | grep -q . && err "every step needs 'Tests: <named behaviour tests>' (or 'Tests: none — <reason>')"
 	_markers "$f"

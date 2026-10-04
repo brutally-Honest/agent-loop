@@ -229,11 +229,23 @@ has "finish" "$($L log BRANCH reviewer PASS)" "ACTION finish"
 out=$($L finish); has report "$out" "check by hand: run sub 3 5"; has report "$out" "Branch review: PASS"
 bad test -f .agent-loop/$F/lock
 
-echo "== tamper detection (approved file edited and committed outside approve.sh)"
-echo "sneaky" >> $D/tasks.md; git commit -qam "chore: tweak"
-has tamper "$($L status)" "tampered"
+echo "== approvals follow the contract fingerprint, not the whole file"
+echo "sneaky note" >> $D/tasks.md; git commit -qam "chore: note in tasks.md"
+has "a note outside the task blocks keeps tasks approved" "$($L status)" "tasks.md  approved v1"
+awk '{ sub(/Users can add but not subtract\./, "Users can add, but they cannot subtract."); print }' $D/spec.md > x && mv x $D/spec.md
+git commit -qam "docs: reword the problem"
+has "a Problem edit keeps the spec approved" "$($L status)" "spec.md   approved v1"
+ok $L gate implement
+awk '{ sub(/the system shall print the negative number/, "the system shall print the negative result"); print }' $D/spec.md > x && mv x $D/spec.md
+git commit -qam "docs: reword AC2"
+out=$($L gate implement 2>&1)
+has "an AC edit stops the build, naming the AC" "$out" "AC2 changed since you approved spec.md"
+has "…and offers /change --adopt" "$out" "/change --adopt"
+has "…or the exact undo" "$out" "git checkout [0-9a-f]* -- $D/spec.md"
 bad $L gate implement
-git reset -q --hard HEAD~1
+printf -- '---\nstatus: approved\n---\n' > /dev/null
+git reset -q --hard HEAD~3
+ok $L gate implement
 
 echo "== /amend: change request → reopen → cascade → done tasks frozen → verify red → fix limit"
 ok $L gate amend
@@ -420,6 +432,46 @@ $L log T005 implementer "DONE T005 x" >/dev/null
 has "final verify green → branch review" "$($L next)" "ACTION review BRANCH"
 eq "every-3: verify ran after T003 and before finish only" "$(grep 'VERIFY ' .agent-loop/$FF/run.log | sed 's/.*VERIFY \([a-z]*\) \([a-z]*\) \([A-Z0-9a-z]*\).*/\1 \2 \3/' | tr '\n' ',')" "green after T003,red before finish,green before finish,"
 has "report gives the review reasons" "$($L report)" "skipped: low risk"
+
+echo "== loosened rigidity: editable open tasks, minimal specs, --here, optional trailers"
+mkfeat edits 3 || exit 1
+$L start --session s7 >/dev/null; $L next >/dev/null; impl T001; $L log T001 implementer "DONE T001 x" >/dev/null
+awk '/^### T002/ { b = 1 } /^### T003/ { b = 2 } /^## Changelog/ { b = 0 }
+	b == 1 { t2 = t2 $0 "\n"; next } b == 2 { t3 = t3 $0 "\n"; next }
+	/^## Changelog/ { printf "%s%s", t3, t2 } { print }' $DD/tasks.md > x && mv x $DD/tasks.md
+git commit -qam "docs: do step 3 first"
+has "open tasks reordered by hand stay approved" "$($L status)" "tasks.md  approved v1"
+has "the reordered task runs next" "$($L next)" "ACTION implement T003"
+git stash -q 2>/dev/null; $L pause >/dev/null
+awk '{ sub(/- Do: src\/s1.sh/, "- Do: src/s1.sh and more"); print }' $DD/tasks.md > x && mv x $DD/tasks.md
+git commit -qam "docs: rewrite done T001"
+out=$($L start --session s7 2>&1); has "a done task's block is frozen" "$out" "T001 is done — its block changed"
+git reset -q --hard HEAD~1
+
+git checkout -q main && git checkout -q -b my-branch
+out=$($L new feat herefeat --here); has "--here keeps the branch" "$out" "BRANCH my-branch"
+HD=specs/$(printf '%s\n' "$out" | awk '$1 == "FEATURE" { print $2 }')
+has "the feature resolves on a free branch name" "$($L status)" "herefeat"
+python3 - "$HD/spec.md" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+head, body = s.split("\n---\n", 1)
+open(p, "w").write(head + "\n---\n# Herefeat\n\n## Goal\nOne thing works.\n\n## Agnosticism check\nNothing here depends on a vendor.\n\n## Acceptance criteria\n- **AC1** — When it runs, the system shall print ok.\n")
+PY
+sed 's/^status: draft$/status: approved/' $HD/spec.md > x && mv x $HD/spec.md
+has "hand-set status: approved is not an approval" "$($L status)" "spec.md   unproven"
+out=$($A spec 2>&1); has "a spec with only Goal + ACs approves" "$out" "APPROVED spec v1"
+has "an extra section is kept" "$(cat $HD/spec.md)" "## Agnosticism check"
+bad $L new feat nope --here 2>/dev/null; git checkout -q main; bad $L new feat nope --here
+
+mkfeat notrailers 2 "trailers: off" || exit 1
+notr() { awk 'BEGIN { print "echo plain" }' > "src/$FN-$1.sh"; printf 'exit 0\n' > "tests/${FN}_$1_test.sh"; printf 'feat(x): %s without trailers\n' "$1" > .agent-loop/commit-msg; git add "src/$FN-$1.sh" "tests/${FN}_$1_test.sh" && git commit -qF .agent-loop/commit-msg; }
+$L start --session s8 >/dev/null
+has "the context pack says no trailers" "$($L task T001)" "COMMIT TRAILERS: off"
+$L next >/dev/null; notr T001; has "TRAILERS=off: no trailer check" "$($L log T001 implementer "DONE T001 x")" "ACTION next"
+$L next >/dev/null; notr T002; $L log T002 implementer "DONE T002 x" >/dev/null
+$L next >/dev/null; $L log BRANCH reviewer PASS >/dev/null; $L finish >/dev/null
+has "impact finds commits without trailers" "$($L impact AC1)" "commit .* feat(x): T001 without trailers"
 
 echo "== profiles"
 git checkout -q main
