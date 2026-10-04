@@ -473,6 +473,83 @@ $L next >/dev/null; notr T002; $L log T002 implementer "DONE T002 x" >/dev/null
 $L next >/dev/null; $L log BRANCH reviewer PASS >/dev/null; $L finish >/dev/null
 has "impact finds commits without trailers" "$($L impact AC1)" "commit .* feat(x): T001 without trailers"
 
+echo "== /change, /fix, /answer, /status, inline BLOCKED and ESCALATE"
+cmdhook() { printf '{"command_name":"%s","command_args":%s,"cwd":"%s","session_id":"%s"}' "$1" "$(jq -Rn --arg a "$2" '$a')" "$T" "${3:-s0}" | .claude/hooks/on-command.sh; }
+mkfeat early 2 || exit 1
+has "/status runs in the hook" "$(cmdhook status '')" "show it to the user exactly"
+has "/status --config adds the settings" "$(cmdhook status '--config')" "REVIEW=risk"
+out=$(cmdhook change 'step 1 should print one')
+has "/change before anything is built: reopen" "$out" "MODE reopen"; has "…done by the hook" "$out" "REOPENED spec.md v2"
+bad grep -q 'CR-' <<<"$(ls $DD)"
+has "spec reopened, no change request" "$($L status)" "spec.md   draft v2"
+$A spec >/dev/null; has "re-approved unchanged" "$($L status)" "spec.md   approved v2"
+has "/implement with a draft spec says what to do" "$(git checkout -q main; $L new feat drafty >/dev/null; $L gate implement 2>&1)" "/approve spec, then /plan"
+git checkout -q -- . 2>/dev/null; git clean -qfd specs 2>/dev/null
+
+mkfeat built 3 || exit 1
+$L start --session s9 >/dev/null; $L next >/dev/null; impl T001; $L log T001 implementer "DONE T001 x" >/dev/null
+has "/change with done work: change request" "$(cmdhook change 'step 2 prints two' s9)" "MODE cr"
+awk '{ sub(/When step 2 runs, the system shall print 2\./, "When step 2 runs, the system shall print two."); print }' $DD/spec.md > x && mv x $DD/spec.md
+git commit -qam "docs: AC2 says two"
+has "the hand edit is named" "$($L status)" "AC2 changed since you approved spec.md"
+has "/change --adopt" "$(cmdhook change '--adopt' s9)" "MODE adopt"
+out=$($L cr-new --adopt); has "adopt fills the Delta" "$out" "MODIFIED AC2 — When step 2 runs, the system shall print two. (was: When step 2 runs, the system shall print 2.)"
+C2=$(printf '%s\n' "$out" | awk '$1 == "FILE" { print $2 }')
+fill $C2 <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read()
+s=s.replace("class:\n","class: scope-change\n",1).replace("<title>","AC2 prints two")
+for h,t in [("Why","words read better"),("Impact","| T002 (AC2) | todo | changes | keep |"),("Recommendation","reopen spec")]:
+    s=s.replace("## "+h+"\n","## "+h+"\n"+t+"\n",1)
+open(p,'w').write(s)
+PY
+ok $L check change
+out=$($A change 2>&1); has "approving the CR reopens the spec, keeping the edit" "$out" "REOPENED spec.md v2"
+has "the edit is still there" "$(cat $DD/spec.md)" "shall print two"
+out=$($A spec 2>&1); has "re-approval applies the adopted CR" "$out" "APPROVED spec v2"; has "and reopens plan + tasks" "$out" "REOPENED tasks.md v2"
+$A plan >/dev/null; has "plan + tasks approved again" "$($L status)" "tasks.md  approved v2"
+
+out=$($L add-fix "sub prints garbage for empty input"); has "/fix adds a task" "$out" "ADDED T004 — fix: sub prints garbage for empty input (runs before T002)"
+has "fix task committed" "$(git log -1 --format=%s)" "add T004 — fix"
+has "tasks still approved" "$($L status)" "tasks.md  approved v2"
+has "the fix runs next" "$($L start --session s9 >/dev/null; $L next)" "ACTION implement T004"
+has "/fix on an unmerged feature adds a task" "$(cmdhook fix 'x')" "MODE task"
+git branch -q merged-snap main; git checkout -q main; git merge -q --no-ff --no-edit "feat/$FF" >/dev/null 2>&1; git checkout -q "feat/$FF"
+has "/fix on a merged feature starts a quick fix" "$(cmdhook fix 'x')" "MODE quick"
+has "/change after merge points to --supersedes" "$(cmdhook change 'x')" "supersedes"
+git checkout -q main; has "/fix with no feature starts a quick fix" "$(cmdhook fix 'x')" "MODE quick"
+git reset -q --hard merged-snap; git branch -q -D merged-snap; git checkout -q "feat/$FF"
+
+echo "src partial" > "src/$FN-T004.sh"
+awk '{ print } /^## Open questions/ { print "- **Q1** (open) T004 — Empty input: error or zero? — options: A) print an error B) print 0" }' $DD/research.md > x && mv x $DD/research.md
+printf 'docs(%s): record Q1 blocking T004\n\nFeature: %s\nBlocked: T004 Q1\n' $FF $FF > .agent-loop/commit-msg
+git add $DD/research.md && git commit -qF .agent-loop/commit-msg
+git stash push -q -u -m "T004 blocked on Q1"
+out=$(stop implementer b1 "BLOCKED T004 Q1"); [ -z "$out" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL blocked stop: $out"; }
+out=$($L log T004 implementer "BLOCKED T004 Q1")
+has "BLOCKED asks inline" "$out" "ACTION ask Q1 T004"; has "with the question" "$out" "QUESTION T004 — Empty input: error or zero?"
+has "and its options" "$out" "OPTION print an error"; has "every option" "$out" "OPTION print 0"
+out=$($L answer Q1 print an error)
+has "answer re-dispatches the same task" "$out" "ACTION implement T004"
+has "the stashed attempt is back" "$(cat src/$FN-T004.sh)" "src partial"
+has "the answer is recorded" "$(cat $DD/research.md)" "Q1\*\* (answered)"
+has "…with the text" "$(cat $DD/research.md)" "Answer:\*\* print an error"
+has "…and committed" "$(git log -1 --format=%s)" "answer Q1"
+impl T004
+has "the restored task finishes normally" "$($L log T004 implementer "DONE T004 x")" "ACTION"
+echo "== inline ESCALATE"
+mkfeat esc2 1 "review: every" || exit 1
+$L start --session s11 >/dev/null; $L next >/dev/null; impl T001; $L log T001 implementer "DONE T001 x" >/dev/null
+has "ESCALATE asks inline" "$($L log T001 reviewer ESCALATE)" "ACTION ask-escalate T001"
+has "accept as is → PASS and continue" "$($L accept T001 the spec is fine as is)" "ACTION"
+has "the accepted risk is on record" "$($L report)" "accepted by you: the spec is fine as is"
+has "and in the run log" "$(cat .agent-loop/$FF/run.log)" "ACCEPTED by the user"
+
+echo "== plain language"
+for w in fingerprint chain_errors art_state; do
+	eq "no '$w' in user-facing messages" "$(grep -nE "(die|echo|err|pe|wrn|warn|block|deny) \"[^\"]*$w" .claude/scripts/*.sh .claude/hooks/*.sh | grep -c .)" 0
+done
+
 echo "== profiles"
 git checkout -q main
 cp .claude/loop.conf "$X/conf.p"

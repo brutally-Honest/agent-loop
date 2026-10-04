@@ -251,7 +251,7 @@ check_brief() { # file
 }
 
 check_change() { # file
-	local f=$1 name scope class delta bad nac target ids all line verb id t acs dones impact
+	local f=$1 name scope class delta bad nac target ids all line verb id t acs dones impact base
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
 	name=${f##*/}; name=${name%.md}
@@ -268,8 +268,14 @@ check_change() { # file
 	if [ "$nac" -gt 0 ] && [ "$scope" != spec ]; then err "the Delta changes acceptance criteria, so scope must be 'spec'"; fi
 	if [ "$nac" = 0 ] && [ "$scope" = spec ] && [ "$class" != clarification ]; then err "scope 'spec' needs AC lines in the Delta (or class 'clarification')"; fi
 	if is_quick; then target=$(art brief); else target=$(art spec); fi
-	ids=$(_ac_text "$target" | ac_active)
-	all=$( { _ac_text "$target" | ac_active; _ac_text "$target" | ac_struck; } )
+	# the Delta is relative to the approved version: with /change --adopt the file already holds the edit
+	if [ "$(art_state "$target")" = changed ]; then
+		base=$(_old_ac_text "$target" "$(approval_sha "$target")")
+	else
+		base=$(_ac_text "$target")
+	fi
+	ids=$(printf '%s\n' "$base" | ac_active)
+	all=$( { printf '%s\n' "$base" | ac_active; printf '%s\n' "$base" | ac_struck; } )
 	dones=$(done_tasks)
 	impact=$(section "$f" "Impact")
 	while IFS= read -r line; do

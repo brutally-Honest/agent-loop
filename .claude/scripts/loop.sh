@@ -13,7 +13,8 @@
 #   config [TASK]                     every setting's effective value and where it came from
 #   start --session ID [flags] | pause [--now] | next | log <ID> <agent> '<first line>' | stop '<reason>' | finish
 #   task <ID> | findings <ID> | review-info <ID|BRANCH|Q> | post-check <ID>
-#   verify | test <args> | impact <ACn...> | cr-new | lineage | report | doctor | suggest-verify | unlock | resolve
+#   answer <Qn> <text> | accept <ID> <reason> | add-fix <bug> | cr-new [--adopt]
+#   verify | test <args> | impact <ACn...> | lineage | report | doctor | suggest-verify | unlock | resolve
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -119,15 +120,19 @@ cmd_new() {
 		esac
 		shift
 	done
-	case $kind in feat | fix | refactor | chore) ;; *) die "kind must be feat, fix, refactor or chore (got '$kind')" ;; esac
-	printf '%s' "$slug" | grep -Eq '^[a-z0-9][a-z0-9-]{1,47}$' || die "slug must be 2-48 chars: lowercase letters, digits, dashes (got '$slug')"
+	case $kind in feat | fix | refactor | chore) ;; *) die "the kind of change must be feat, fix, refactor or chore (got '$kind').
+  do this: pick one of those four" ;; esac
+	printf '%s' "$slug" | grep -Eq '^[a-z0-9][a-z0-9-]{1,47}$' || die "the short name '$slug' won't work as a branch and folder name.
+  do this: use 2-48 lowercase letters, digits and dashes, e.g. rate-limit"
 	git ls-files --error-unmatch .claude/scripts/loop.sh >/dev/null 2>&1 \
-		|| die "commit the agent-loop kit first (git add .claude .gitignore && git commit) — branches, worktrees and clean-tree checks need it tracked"
+		|| die "the agent-loop kit isn't committed yet, so a new branch wouldn't have it.
+  do this: git add .claude .gitignore && git commit -m \"chore: add agent-loop kit\""
 	base=${base:-$(base_branch)}
 	git rev-parse --verify --quiet "$base^{commit}" >/dev/null || die "base '$base' not found"
 	if [ -n "$SUP" ]; then
 		d=$(git ls-tree --name-only "$base" "$SPECS_DIR/" 2>/dev/null | awk -v n="${SUP%%-*}" '{ k = split($0, p, "/"); if (index(p[k], n "-") == 1) { print p[k]; exit } }')
-		[ -n "$d" ] || die "--supersedes $SUP: no such feature merged into $base"
+		[ -n "$d" ] || die "there is no feature $SUP merged into $base to supersede.
+  do this: check the number (ls $SPECS_DIR on $base)"
 		SUP=$d
 	fi
 	n=$(next_number); F="$n-$slug"; KIND=$kind
@@ -142,14 +147,17 @@ cmd_new() {
 		d=$( (resolve_feature && printf '%s' "$F") 2>/dev/null ) && die "branch $br already holds feature $d — one feature per branch.
   do this: git switch -c <another branch>, then try again"
 		target=$REPO
-	elif git show-ref --verify --quiet "refs/heads/$br"; then die "branch $br already exists"
+	elif git show-ref --verify --quiet "refs/heads/$br"; then die "branch $br already exists.
+  do this: git switch $br to work on it, or pick another short name"
 	elif [ $wt = 1 ]; then
 		path=".claude/worktrees/$F"
-		git check-ignore -q "$path/x" || die ".claude/worktrees/ is not gitignored — add it to .gitignore first (install.sh does this)"
+		git check-ignore -q "$path/x" || die ".claude/worktrees/ isn't gitignored, so the worktree would show up as changes.
+  do this: echo '.claude/worktrees/' >> .gitignore && git commit -am \"chore: ignore worktrees\""
 		git worktree add -q -b "$br" "$path" "$base" || die "git worktree add failed"
 		target="$REPO/$path"
 	else
-		tree_clean || die "working tree not clean — commit or stash first (or use --worktree)"
+		tree_clean || die "the working tree has uncommitted changes, and switching branches would carry them along.
+  do this: commit or stash them — or use --here (stay on this branch) or --worktree"
 		git switch -q -c "$br" "$base" || die "git switch -c $br $base failed"
 		target=$REPO
 	fi
@@ -259,7 +267,8 @@ pending_crs() { local c; for c in $(cr_files); do [ "$(fm_get "$c" status)" = ap
 
 gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan is approved, only tasks.md is open
 	local e p t st tst mode=new
-	is_quick && die "$F is a /quick feature (brief.md) — it has no plan"
+	is_quick && die "$F is a /quick change: it has a brief, not a plan.
+  do this: /approve brief (it builds right after), or /change to amend the brief"
 	e=$(chain_errors spec) || die "the planner can't start yet:
   $e"
 	p=$(art plan); t=$(art tasks); st=$(art_state "$p"); tst=$(art_state "$t")
@@ -268,7 +277,8 @@ gate_plan() { # the planner writes plan.md and tasks.md; MODE tasks = the plan i
 		draft) [ -n "$(fm_get "$p" previous)" ] && mode=amend ;;
 		approved)
 			case $tst in
-				approved) die "plan.md and tasks.md are already approved — to change them, use /change" ;;
+				approved) die "plan.md and tasks.md are already approved.
+  do this: /implement to build — or /change plan <what> to change them" ;;
 				missing | draft) mode=tasks ;;
 				*) die "$(art_why "$t" "$tst")" ;;
 			esac ;;
@@ -310,29 +320,78 @@ $(printf '%s\n' "$e" | sed 's/^/  /')"
 	fi
 }
 
-gate_amend() {
-	local f st c n
-	if is_quick; then f=$(art brief); else f=$(art spec); fi
+built() { # 0 when any task (or Q) has been built: work exists that a change has to account for
+	[ -n "$(done_tasks)" ] && return 0
+	[ -f "$(sdir)/state" ] || return 1
+	awk -F '\t' '{ s[$1] = $2 } END { for (k in s) if (k != "BRANCH" && s[k] ~ /^(IMPLEMENTED|PASS|NEEDS-HUMAN|STOPPED|ESCALATED)$/) f = 1; exit !f }' "$(sdir)/state"
+}
+
+merged() { # 0 when this feature's spec or brief is already on the base branch
+	git cat-file -e "$(base_branch):$(art spec)" 2>/dev/null || git cat-file -e "$(base_branch):$(art brief)" 2>/dev/null
+}
+
+gate_change() { # [--adopt] [--reconcile] [spec|plan|tasks] <request> -> MODE edit | reopen | cr | adopt | reconcile
+	local adopt=0 rec=0 what="" first=1 f st mode
+	while [ $# -gt 0 ]; do
+		case $1 in
+			--adopt) adopt=1 ;;
+			--reconcile) rec=1 ;;
+			spec | plan | tasks) [ $first = 1 ] && what=$1; first=0 ;;
+			*) first=0 ;;
+		esac
+		shift
+	done
+	if is_quick; then what=brief; else what=${what:-spec}; fi
+	merged && die "$F is already merged into $(base_branch), so it is history now.
+  do this: /spec --supersedes ${F%%-*} <the change>   (a new feature that replaces it)"
+	f=$(art "$what")
+	[ -f "$f" ] || die "there is no $what.md in $F yet.
+  do this: /plan"
 	st=$(art_state "$f")
 	case $st in
-		approved | changed) ;;
-		draft) die "${f##*/} is still a draft — just edit it (/spec or /quick); a change request is only for approved work" ;;
-		missing) die "no ${f##*/} for $F" ;;
+		draft) mode=edit ;;
+		approved | changed)
+			if [ $rec = 1 ]; then
+				built || die "nothing is built yet, so there is no code to reconcile with the spec.
+  do this: /change <what> (without --reconcile)"
+				mode=reconcile
+			elif built; then
+				if [ $adopt = 1 ] || [ "$st" = changed ]; then mode=adopt; else mode=cr; fi
+			else mode=reopen; fi ;;
 		*) die "$(art_why "$f" "$st")" ;;
 	esac
-	git cat-file -e "$(base_branch):$f" 2>/dev/null \
-		&& die "$F is already merged into $(base_branch) — changes now are a new feature: /spec --supersedes ${F%%-*} <the change>"
-	[ -f "$STATE_ROOT/$F/lock" ] && echo "NOTE a build is running for $F — it pauses when you type; /resume after the change"
-	echo "GATE amend: OK"
+	if [ "$mode" = adopt ] && [ "$st" != changed ]; then
+		die "${f##*/} has no edits since you approved it, so there is nothing to adopt.
+  do this: edit it first, or /change <what> without --adopt"
+	fi
+	[ -f "$STATE_ROOT/$F/lock" ] && echo "NOTE a build is running for $F — it pauses now; /resume after the change"
+	echo "GATE change: OK"
 	echo "FEATURE $F"
+	echo "TARGET $what"
+	echo "FILE $f"
+	echo "MODE $mode"
 	echo "MODEL $(cfg MODEL_IMPACT)"
-	echo "QUICK $(is_quick && echo yes || echo no)"
 	echo "DONE-TASKS $(done_tasks | tr '\n' ' ')"
 	echo "DRAFT-CR $(draft_crs | head -1)"
 }
 
+gate_fix() { # -> MODE task (add a fix task to this feature) | quick (a new fix/ branch from the base)
+	if soft_feature; then
+		if merged; then echo "GATE fix: OK"; echo "MODE quick"; echo "WHY $F is merged — the fix gets its own branch"; return 0; fi
+		is_quick && die "$F is a /quick change: it has no task list to add a fix to.
+  do this: /change <the fix>   (amends its brief)"
+		echo "GATE fix: OK"; echo "FEATURE $F"; echo "MODE task"
+		return 0
+	fi
+	echo "GATE fix: OK"; echo "MODE quick"; echo "WHY no feature on $(current_branch) — the fix gets its own branch"
+}
+
 cmd_gate() {
 	local what=${1:-} feat="" flags=""; shift || true
+	case $what in
+		change | amend) resolve_feature; gate_change "$@"; return ;;
+		fix) gate_fix; return ;;
+	esac
 	while [ $# -gt 0 ]; do
 		case $1 in --*) flags="$flags $1 ${2:-}"; shift ;; *) feat=$1 ;; esac
 		shift
@@ -341,8 +400,8 @@ cmd_gate() {
 	# shellcheck disable=SC2086
 	if [ "$what" = implement ]; then parse_run_flags $flags; check_effective_cfg; fi
 	case $what in
-		plan | tasks) gate_plan ;; implement) gate_implement ;; amend) gate_amend ;;
-		*) die "usage: gate plan|tasks|implement|amend [feature]" ;;
+		plan | tasks) gate_plan ;; implement) gate_implement ;;
+		*) die "usage: gate plan|implement|change|fix [feature]" ;;
 	esac
 }
 
@@ -601,7 +660,8 @@ cmd_config() { # [TASK]
 	echo "Settings${F:+ for $F} — first match wins: run flags > task fields > plan.md frontmatter > .claude/loop.conf > profile > kit default"
 	for k in $CFG_KEYS; do cfg_lookup "$k"; printf '%s=%s (%s)\n' "$k" "$CV" "$CS"; done
 	if [ -n "$t" ]; then
-		[ -n "$F" ] || die "no feature on this branch — check out the feature branch to see a task's settings"
+		[ -n "$F" ] || die "there's no feature on this branch, so there are no task settings to show.
+  do this: git switch <the feature's branch>"
 		if [ "$t" != Q ]; then task_block "$(art tasks)" "$t" | grep -q . || die "no task $t in $(art tasks)"; fi
 		echo "Task $t"
 		model_for "$t"; printf 'MODEL=%s (%s)\n' "$CV" "$CS"
@@ -670,6 +730,11 @@ cmd_next() {
 	fi
 	for id in $(task_ids "$(art tasks)"); do
 		[ "$(state_get "$id")" = IMPLEMENTED ] && { echo "RESUME $id was implemented but not reviewed"; after_implemented "$id"; return 0; }
+		if [ "$(state_get "$id")" = ESCALATED ]; then
+			state_set "$id" IMPLEMENTED "re-review after your decision"
+			echo "RESUME $id was escalated — reviewing it again against the spec as it is now"
+			log_event "$id re-review after the escalation"; act_review "$id"; return 0
+		fi
 	done
 	for id in $(task_ids "$(art tasks)"); do
 		st=$(state_get "$id")
@@ -716,7 +781,8 @@ cmd_log() {
 				BLOCKED)
 					q=$(printf '%s' "$w3" | grep -oE '^Q[0-9]+'); q=${q:-Q?}
 					state_set "$id" BLOCKED "$q"; log_event "$id $agent BLOCKED $q"
-					echo "ACTION stop blocked $id $q" ;;
+					question_lines "$q"
+					echo "ACTION ask $q $id" ;;
 				NEEDS-HUMAN)
 					tree_clean || { log_event "$id NEEDS-HUMAN with a dirty tree"; echo "ACTION stop dirty-tree $id"; return 0; }
 					state_set "$id" NEEDS-HUMAN "$w3"; log_event "$id $agent NEEDS-HUMAN $w3"
@@ -740,7 +806,7 @@ cmd_log() {
 					log_event "$id reviewer PASS $(short)"
 					if is_quick; then echo "ACTION finish"; else echo "ACTION next"; fi ;;
 				FIX) log_event "$id reviewer FIX"; bump "$id" review ;;
-				ESCALATE) state_set "$id" ESCALATED; log_event "$id reviewer ESCALATE"; echo "ACTION stop escalate $id" ;;
+				ESCALATE) state_set "$id" ESCALATED; log_event "$id reviewer ESCALATE"; echo "ACTION ask-escalate $id" ;;
 				*) log_event "$id reviewer CONTRACT '$line'"; echo "ACTION stop contract $id (reviewer verdict was not PASS/FIX/ESCALATE)" ;;
 			esac ;;
 		*) die "agent must be implementer, quick-builder or reviewer" ;;
@@ -897,7 +963,8 @@ cmd_verify() {
 }
 
 cmd_test() {
-	[ -n "$TEST_CMD" ] || die "TEST_CMD is not set in .claude/loop.conf"
+	[ -n "$TEST_CMD" ] || die "TEST_CMD is not set in .claude/loop.conf.
+  do this: run the repo's own test command for the packages you touched"
 	bash -c "$TEST_CMD"' "$@"' _ "$@"
 }
 
@@ -928,17 +995,161 @@ cmd_impact() {
 	done
 }
 
-cmd_cr_new() {
-	local n max=0 c d
+cmd_cr_new() { # [--adopt] — with --adopt the Delta is filled from your edit of the approved spec (or brief)
+	local n max=0 c d adopt=0 t sha delta file
+	[ "${1:-}" = --adopt ] && adopt=1
 	resolve_feature
 	d=$(draft_crs | head -1)
 	if [ -n "$d" ]; then echo "CR $d (existing draft — revise it)"; echo "FILE $SPECS_DIR/$F/changes/$d.md"; return 0; fi
+	if [ $adopt = 1 ]; then
+		if is_quick; then t=$(art brief); else t=$(art spec); fi
+		[ "$(art_state "$t")" = changed ] || die "${t##*/} has no edits since you approved it, so there is nothing to adopt."
+		sha=$(approval_sha "$t")
+		delta=$(adopt_delta "$t" "$sha")
+	fi
 	mkdir -p "$SPECS_DIR/$F/changes"
 	for c in $(cr_files); do n=${c##*/CR-}; n=${n%.md}; n=$((10#$n)); [ "$n" -gt "$max" ] && max=$n; done
 	CR=$(printf 'CR-%03d' $((max + 1)))
-	render cr.md "$SPECS_DIR/$F/changes/$CR.md"
+	file="$SPECS_DIR/$F/changes/$CR.md"
+	render cr.md "$file"
+	if [ $adopt = 1 ]; then
+		fm_set "$file" scope spec
+		[ -n "$delta" ] || delta="- none"
+		D="$delta" R="Adopt my edit of ${t##*/} (made after its approval in $(git rev-parse --short "$sha"))." awk '
+			$0 == "## Delta" { print; print ENVIRON["D"]; next }
+			$0 == "## Request" { print; print ENVIRON["R"]; next }
+			{ print }' "$file" > "$file.new" && mv "$file.new" "$file"
+		echo "ADOPTED the AC changes of ${t##*/} into the Delta:"
+		printf '%s\n' "$delta" | sed 's/^/  /'
+	fi
 	echo "CR $CR"
-	echo "FILE $SPECS_DIR/$F/changes/$CR.md"
+	echo "FILE $file"
+}
+
+adopt_delta() { # file approval-sha -> Delta lines (ADDED / MODIFIED / REMOVED) for the AC edits since then
+	local f=$1 sha=$2 h o n ids id ol nl
+	case $f in *brief.md) h="Acceptance" ;; *) h="Acceptance criteria" ;; esac
+	o=$(git show "$sha:$f" 2>/dev/null | strip_fm | strip_noise | sec "$h")
+	n=$(doc "$f" | sec "$h")
+	ids=$( { printf '%s\n' "$o" "$n" | ac_active; printf '%s\n' "$o" "$n" | ac_struck; } | sort -u | sort -t C -k 2n)
+	actext() { sed -E 's/^[[:space:]]*[-*][[:space:]]+(~~)?\*\*AC[0-9]+\*\*(~~)?[[:space:]]*(—|-|:)?[[:space:]]*//'; }
+	for id in $ids; do
+		ol=$(printf '%s\n' "$o" | ac_active | grep -qx "$id" && printf '%s\n' "$o" | ac_line "$id")
+		nl=$(printf '%s\n' "$n" | ac_line "$id")
+		if [ -z "$ol" ]; then
+			printf '%s\n' "$n" | ac_active | grep -qx "$id" && echo "- ADDED $id — $(printf '%s\n' "$nl" | actext)"
+		elif [ -z "$nl" ] || printf '%s\n' "$n" | ac_struck | grep -qx "$id"; then
+			echo "- REMOVED $id — removed in your edit (was: $(printf '%s\n' "$ol" | actext))"
+		elif [ "$ol" != "$nl" ]; then
+			echo "- MODIFIED $id — $(printf '%s\n' "$nl" | actext) (was: $(printf '%s\n' "$ol" | actext))"
+		fi
+	done
+}
+
+cmd_add_fix() { # <the bug, in words> -> a not-started task "Tnnn — fix: <bug>" placed before the first open task, committed
+	local bug="$*" t sha ids max next first subj scope tmp
+	resolve_feature
+	is_quick && die "$F is a /quick change: it has no task list.
+  do this: /change <the fix>"
+	[ -n "$bug" ] || die "say what is broken.
+  do this: /fix <what goes wrong, and when>"
+	t=$(art tasks)
+	[ "$(art_state "$t")" = approved ] || die "tasks.md isn't approved, so a fix task can't join it yet:
+  $(art_why "$t" "$(art_state "$t")")"
+	tree_clean || die "the working tree has uncommitted changes.
+  do this: commit or stash them, then /fix again"
+	sha=$(approval_sha "$t")
+	ids=$( { task_ids "$t"; git show "$sha:$t" 2>/dev/null | strip_fm | strip_noise | task_ids_stdin; } | sort -u)
+	max=$(printf '%s\n' $ids | sort | tail -1); max=${max#T}
+	next=$(printf 'T%03d' $((10#${max:-0} + 1)))
+	first=""
+	for id in $(task_ids "$t"); do in_list "$id" "$(done_tasks)" || { first=$id; break; }; done
+	scope=${F#[0-9][0-9][0-9]-}
+	subj=$(printf '%s' "$bug" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9 .,-' ' ' | tr -s ' ' | sed 's/^ //; s/ $//' | cut -c1-60)
+	BLK="### $next — fix: $bug
+- Do: reproduce and fix: $bug
+- Tests: a regression test that fails before the fix and passes after it ($bug)
+- AC: none — bug fix: $bug
+- Commit: fix($scope): $subj
+- Depends: —
+- Size: S
+- Risk: low
+" FIRST="$first" awk '
+		function emit() { if (!done) { printf "%s\n", ENVIRON["BLK"]; done = 1 } }
+		ENVIRON["FIRST"] != "" && index($0, "### " ENVIRON["FIRST"]) == 1 && substr($0, 9, 1) !~ /[0-9]/ { emit() }
+		/^## / && intasks && !/^## Tasks/ { emit() }
+		/^## Tasks/ { intasks = 1 }
+		{ print }
+		END { emit() }' "$t" > "$t.new" && mv "$t.new" "$t"
+	if ! tmp=$(tasks_problems "$t" "$sha"); then
+		git checkout -q -- "$t"
+		die "the fix task would make tasks.md invalid, so nothing was added:
+$tmp"
+	fi
+	git commit -q -m "docs($F): add $next — fix: $subj" -- "$t" || die "committing tasks.md failed"
+	log_event "$next added by /fix: $bug"
+	echo "ADDED $next — fix: $bug$( [ -n "$first" ] && echo " (runs before $first)")"
+	if [ "$(cfg AUTO_APPROVE_TASKS)" = on ]; then echo "NEXT the build runs $next now"
+	else echo "NEXT /approve tasks (AUTO_APPROVE_TASKS=off), then /implement"; fi
+}
+
+question_lines() { # Qn -> QUESTION <text> and OPTION <text> lines from research.md, for the question card
+	section "$(art research)" "Open questions" | Q="$1" awk '
+		index($0, "**" ENVIRON["Q"] "**") {
+			s = $0; sub(/^[[:space:]]*[-*][[:space:]]+\*\*Q[0-9]+\*\*[[:space:]]*\([a-z]+\)[[:space:]]*/, "", s)
+			i = index(s, "options:"); qs = s; os = ""
+			if (i) { qs = substr(s, 1, i - 1); os = substr(s, i + 8) }
+			sub(/[[:space:]—-]+$/, "", qs)
+			print "QUESTION " qs
+			n = split(" " os, parts, /[[:space:]]+[A-Z]\)[[:space:]]+/)
+			for (j = 2; j <= n; j++) { t = parts[j]; sub(/[[:space:]]+$/, "", t); if (t != "") print "OPTION " t }
+			exit
+		}'
+}
+
+cmd_answer() { # Qn <answer> — record your answer, commit research.md, restore the blocked task's attempt
+	local q=${1:-} txt r id ref
+	resolve_feature
+	shift || true; txt="$*"
+	case $q in Q[0-9]*) ;; *) die "say which question and the answer.
+  do this: /answer Q2 <your answer>" ;; esac
+	[ -n "$txt" ] || die "the answer is missing.
+  do this: /answer $q <your answer>"
+	r=$(art research)
+	open_questions | grep -qx "$q" || die "$q is not an open question in $r.
+  do this: .claude/scripts/loop.sh status   (lists the open ones)"
+	Q="$q" A="$txt ($(today))" awk '
+		{ line = $0 }
+		!incom && index(line, "**" ENVIRON["Q"] "**") && index(line, "(open)") && !done {
+			sub(/\(open\)/, "(answered)", line); print line; print "  - **Answer:** " ENVIRON["A"]; done = 1; next }
+		{ print }
+		index(line, "<!--") && !index(line, "-->") { incom = 1 }
+		index(line, "-->") { incom = 0 }' "$r" > "$r.new" && mv "$r.new" "$r"
+	git commit -q -m "docs($F): answer $q" -m "$txt" -- "$r" || die "committing research.md failed"
+	log_event "$q answered: $txt"
+	id=$(awk -F '\t' -v q="$q" '{ s[$1] = $2; d[$1] = $3 } END { for (k in s) if (s[k] == "BLOCKED" && d[k] == q) print k }' "$(sdir)/state" 2>/dev/null | head -1)
+	if [ -z "$id" ]; then echo "ANSWERED $q"; echo "ACTION next"; return 0; fi
+	ref=$(git stash list --format='%gd%x09%s' | I="$id blocked on $q" awk -F '\t' 'index($2, ENVIRON["I"]) { print $1; exit }')
+	if [ -n "$ref" ]; then
+		git stash pop -q "$ref" || die "$id's earlier attempt ($ref) didn't apply cleanly onto HEAD.
+  do this: resolve the conflict in the files git lists, then /resume"
+	fi
+	sfile_set "base.$id" "$(git rev-parse HEAD)"; sfile_set "rounds.$id" 0
+	state_set "$id" IN-PROGRESS "restored after $q"
+	log_event "$id resumes after $q${ref:+ with its stashed attempt}"
+	echo "ANSWERED $q — $id continues${ref:+ from its earlier attempt (restored in the working tree)}"
+	model_for "$id"; echo "ACTION implement $id model=$CV"
+}
+
+cmd_accept() { # Tn <reason> — you accept what the reviewer escalated; the task passes, the risk is on record
+	local id=${1:-} why
+	resolve_feature
+	shift || true; why="$*"
+	[ "$(state_get "$id")" = ESCALATED ] || die "${id:-the task} is not waiting for your decision."
+	[ -n "$why" ] || why="accepted as is"
+	state_set "$id" PASS "accepted by you: $why"; [ "$id" = Q ] || state_set BRANCH CLEARED
+	log_event "$id ACCEPTED by the user despite the reviewer's ESCALATE: $why"
+	if [ "$id" = Q ]; then echo "ACTION finish"; else echo "ACTION next"; fi
 }
 
 cmd_lineage() {
@@ -1026,10 +1237,14 @@ case $cmd in
 	test) cmd_test "$@" ;;
 	impact) cmd_impact "$@" ;;
 	cr-new) cmd_cr_new "$@" ;;
+	add-fix) cmd_add_fix "$@" ;;
+	answer) cmd_answer "$@" ;;
+	accept) cmd_accept "$@" ;;
 	lineage) cmd_lineage "$@" ;;
 	report) resolve_feature "${1:-}"; cmd_report ;;
 	doctor) cmd_doctor ;;
 	resolve) resolve_feature "${1:-}"; echo "$F" ;;
 	help | -h | --help) sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
-	*) die "unknown command '$cmd' (try: loop.sh help)" ;;
+	*) die "there is no loop.sh command '$cmd'.
+  do this: .claude/scripts/loop.sh help" ;;
 esac

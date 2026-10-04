@@ -37,7 +37,7 @@
     ],
     "UserPromptExpansion": [
       {
-        "matcher": "approve|plan|plan-feature|implement|amend",
+        "matcher": "approve|plan|plan-feature|implement|resume|amend|change|fix|answer|status|pause",
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/on-command.sh", "args": [], "timeout": 300 }
         ]

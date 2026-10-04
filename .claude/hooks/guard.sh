@@ -221,7 +221,7 @@ check_file() { # rel path
 	case $rel in
 	"$SPECS_DIR"/*/*.md | "$SPECS_DIR"/*/changes/*.md)
 		sets_approval "$REPO/$rel" \
-			&& deny "only approve.sh sets approval fields (status: approved, approved, sha256, fingerprint, ...). Leave them as they are; the user approves with /approve."
+			&& deny "only the user approves: leave status: approved and the approval stamps under it as they are. The user types /approve."
 		;;
 	esac
 

@@ -467,6 +467,8 @@ art_why() { # file state -> one or two plain lines: what is wrong, and what to t
 			case $k in
 				plan) echo "plan.md is a draft. do this: review it, then /approve plan (or /plan to revise it)" ;;
 				tasks) echo "tasks.md is a draft. do this: fix what '.claude/scripts/loop.sh check tasks' lists (by hand or with /plan), then /approve tasks" ;;
+				spec) echo "spec.md is a draft. do this: review it, then /approve spec, then /plan" ;;
+				brief) echo "brief.md is a draft. do this: review it, then /approve brief (the build starts right after)" ;;
 				*) echo "$n is a draft. do this: review it, then /approve $k" ;;
 			esac ;;
 		unproven) echo "$n says approved, but no approval of yours records it. do this: /approve $k" ;;
