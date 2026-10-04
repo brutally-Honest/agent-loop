@@ -16,31 +16,28 @@
       "Bash(git blame *)"
     ],
     "deny": [
-      "Bash(*approve.sh*)",
-      "Edit(/.claude/hooks/**)",
-      "Edit(/.claude/scripts/**)",
-      "Edit(/.claude/settings.json)",
-      "Edit(/.claude/loop.conf)",
-      "Read(.env)",
-      "Read(.env.*)",
-      "Read(*.pem)",
-      "Read(*.key)",
-      "Read(id_rsa*)",
-      "Read(id_ed25519*)"
+      "Bash(*approve.sh*)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Agent|Task",
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.sh", "args": [], "timeout": 30 }
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/on-prompt.sh", "args": [], "timeout": 30 }
+        ]
+      }
+    ],
     "UserPromptExpansion": [
       {
-        "matcher": "approve|plan-feature|implement|amend",
+        "matcher": "^(.*:)?al-(approve|plan|implement|resume|change|fix|answer|status|pause)$",
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/on-command.sh", "args": [], "timeout": 300 }
         ]
@@ -48,7 +45,7 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "implementer|quick-builder|reviewer|planner|tasker|impact-analyst|spec-critic",
+        "matcher": "implementer|quick-builder|reviewer|planner|impact-analyst|spec-critic",
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/on-agent-stop.sh", "args": [], "timeout": 900 }
         ]

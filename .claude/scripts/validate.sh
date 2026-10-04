@@ -6,6 +6,7 @@
 
 _e=0
 err() { printf '  - %s\n' "$*"; _e=1; }
+wrn() { printf '  ! warning: %s\n' "$*"; }   # reported, never a refusal
 
 _markers() { # file -> one error per unresolved marker (comments are ignored)
 	local m
@@ -56,7 +57,8 @@ check_spec() { # file [draft|approve]
 	local f=$1 mode=${2:-approve} txt ids struck dup
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
-	_need_sections "$f" "Problem" "Goal" "Non-goals" "Acceptance criteria" "Edge cases"
+	# only Goal and the ACs are required; every other section (yours included) is optional and kept
+	_need_sections "$f" "Goal" "Acceptance criteria"
 	txt=$(_ac_text "$f")
 	ids=$(printf '%s\n' "$txt" | ac_active)
 	struck=$(printf '%s\n' "$txt" | ac_struck)
@@ -71,7 +73,7 @@ check_spec() { # file [draft|approve]
 }
 
 check_plan() { # file [draft|approve]
-	local f=$1 mode=${2:-approve} alts n chosen bad spec ids all cov id lines undecided
+	local f=$1 mode=${2:-approve} alts n chosen bad spec ids all cov id lines undecided max
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
 	_need_sections "$f" "Summary" "Approach" "Alternatives considered" "Design" "AC coverage" "Test strategy" "Risks"
@@ -94,7 +96,8 @@ check_plan() { # file [draft|approve]
 	for id in $ids; do in_list "$id" "$cov" || err "'## AC coverage' does not mention $id"; done
 	for id in $(doc "$f" | ac_refs); do in_list "$id" "$all" || err "plan mentions $id, which is not in spec.md"; done
 	lines=$(fm_body "$f" | wc -l | tr -d ' ')
-	[ "$lines" -le "$PLAN_MAX_LINES" ] || err "plan is $lines lines; keep it under $PLAN_MAX_LINES (loop.conf PLAN_MAX_LINES): summarise and point at code"
+	max=$(cfg PLAN_MAX_LINES)
+	[ "$lines" -le "$max" ] || wrn "plan is $lines lines, over PLAN_MAX_LINES=$max: summarise and point at code"
 	section "$f" "Test strategy" | grep -qE '[0-9]+ ?%' && err "'## Test strategy' sets a coverage percentage — name the behaviours and edge cases to test instead"
 	if [ "$mode" != draft ]; then
 		undecided=$(section "$f" "Open questions" | grep -E '^[[:space:]]*[-*][[:space:]]*(\*\*)?Q[0-9]+' | grep -v 'decided:')
@@ -107,8 +110,8 @@ check_plan() { # file [draft|approve]
 	return $_e
 }
 
-check_tasks() { # file
-	local f=$1 spec ids all body tids dup t blk v acs a covered seen x dones opens prev prevtxt ptids maxprev old new c delta line verb id
+check_tasks() { # file [draft|approve]
+	local f=$1 mode=${2:-approve} spec ids all body tids dup t blk v acs a covered seen x dones opens prev prevtxt ptids maxprev old new c delta line verb id
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
 	spec=$(art spec)
@@ -147,6 +150,11 @@ check_tasks() { # file
 		fi
 		v=$(printf '%s\n' "$blk" | field_stdin Tests)
 		printf '%s' "$v" | grep -qiE '[0-9]+ ?%|coverage' && err "$t: '- Tests:' must name behaviours (happy path, edge cases), not coverage"
+		_opt_field "$t" "$blk" Size "S M L"
+		_opt_field "$t" "$blk" Risk "low high"
+		_opt_field "$t" "$blk" Review "skip always"
+		_opt_field "$t" "$blk" Verify "targeted full"
+		_opt_field "$t" "$blk" Model "haiku sonnet opus"
 		v=$(printf '%s\n' "$blk" | field_stdin Commit | tr -d '`')
 		[ -z "$v" ] || printf '%s' "$v" | grep -qE '^[a-z]+(\([^)]+\))?!?: .+' || err "$t: '- Commit:' must be a conventional subject, e.g. 'feat(api): add rate limit'"
 		for x in $(printf '%s\n' "$blk" | field_stdin Depends | grep -oE 'T[0-9][0-9][0-9]'); do
@@ -191,8 +199,15 @@ $delta
 EOF
 	done
 
-	_markers "$f"
+	[ "$mode" = draft ] || _markers "$f"
 	return $_e
+}
+
+_opt_field() { # task block field "valid values" — optional fields must hold a known value when present
+	local v
+	v=$(printf '%s\n' "$2" | field_stdin "$3")
+	[ -n "$v" ] || return 0
+	case " $4 " in *" $v "*) ;; *) err "$1: '- $3: $v' — use one of: $4" ;; esac
 }
 
 _cr_task_cover() { # file body verb id opens dones crname
@@ -219,25 +234,24 @@ check_brief() { # file
 	local f=$1 ids n steps ns
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
-	_need_sections "$f" "Change" "Acceptance" "Out of scope" "Approach" "Steps"
+	_need_sections "$f" "Change" "Acceptance"
 	ids=$(_ac_text "$f" | ac_active)
 	n=$(printf '%s\n' $ids | grep -c .)
 	[ "$n" -ge 1 ] || err "no acceptance criteria — add lines like: - **AC1** — When <trigger>, the system shall <result>."
-	[ "$n" -le "$QUICK_MAX_ACS" ] || err "too big for /quick: $n acceptance criteria (max $QUICK_MAX_ACS) — use /spec for this one"
+	[ "$n" -le "$QUICK_MAX_ACS" ] || err "too big for /al-quick: $n acceptance criteria (max $QUICK_MAX_ACS) — use /al-spec for this one"
 	# shellcheck disable=SC2086
 	_shall "$f" $ids
 	_ids_kept "$f"
 	steps=$(section "$f" "Steps" | grep -E '^[[:space:]]*[-*][[:space:]]+(\*\*)?S[0-9]+')
 	ns=$(printf '%s\n' "$steps" | grep -c .)
-	[ "$ns" -ge 1 ] || err "no steps — add lines like: - **S1** — <what> — Tests: <behaviour tests>"
-	[ "$ns" -le "$QUICK_MAX_STEPS" ] || err "too big for /quick: $ns steps (max $QUICK_MAX_STEPS) — use /spec for this one"
+	[ "$ns" -le "$QUICK_MAX_STEPS" ] || err "too big for /al-quick: $ns steps (max $QUICK_MAX_STEPS) — use /al-spec for this one"
 	printf '%s\n' "$steps" | grep -v 'Tests:' | grep -q . && err "every step needs 'Tests: <named behaviour tests>' (or 'Tests: none — <reason>')"
 	_markers "$f"
 	return $_e
 }
 
 check_change() { # file
-	local f=$1 name scope class delta bad nac target ids all line verb id t acs dones impact
+	local f=$1 name scope class delta bad nac target ids all line verb id t acs dones impact base
 	_e=0
 	[ -f "$f" ] || { err "$f does not exist"; return 1; }
 	name=${f##*/}; name=${name%.md}
@@ -254,8 +268,14 @@ check_change() { # file
 	if [ "$nac" -gt 0 ] && [ "$scope" != spec ]; then err "the Delta changes acceptance criteria, so scope must be 'spec'"; fi
 	if [ "$nac" = 0 ] && [ "$scope" = spec ] && [ "$class" != clarification ]; then err "scope 'spec' needs AC lines in the Delta (or class 'clarification')"; fi
 	if is_quick; then target=$(art brief); else target=$(art spec); fi
-	ids=$(_ac_text "$target" | ac_active)
-	all=$( { _ac_text "$target" | ac_active; _ac_text "$target" | ac_struck; } )
+	# the Delta is relative to the approved version: with /al-change --adopt the file already holds the edit
+	if [ "$(art_state "$target")" = changed ]; then
+		base=$(_old_ac_text "$target" "$(approval_sha "$target")")
+	else
+		base=$(_ac_text "$target")
+	fi
+	ids=$(printf '%s\n' "$base" | ac_active)
+	all=$( { printf '%s\n' "$base" | ac_active; printf '%s\n' "$base" | ac_struck; } )
 	dones=$(done_tasks)
 	impact=$(section "$f" "Impact")
 	while IFS= read -r line; do

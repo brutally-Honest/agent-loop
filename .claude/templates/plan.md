@@ -5,6 +5,7 @@ version: 1
 approved:
 approved-by:
 sha256:
+fingerprint:
 spec-fingerprint:
 ---
 # Plan — {{FEATURE}}

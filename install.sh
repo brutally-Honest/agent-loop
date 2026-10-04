@@ -27,6 +27,13 @@ backup() {
 
 echo "Installing agent-loop into $repo"
 for f in .claude/commands/run-feature.md .claude/hooks/agent-bash-guard.sh; do backup "$f"; done
+# kit skills from before the al- prefix (v0.1 and early v0.2). Only the kit's own: a skill of yours
+# with the same name (no "allowed-tools: Bash(.claude/scripts/loop.sh *)" line) is left alone.
+for s in spec plan plan-feature approve implement amend change fix quick pause resume status answer; do
+	d=".claude/skills/$s"
+	[ -f "$d/SKILL.md" ] || continue
+	if grep -qx "name: $s" "$d/SKILL.md" && grep -qF 'Bash(.claude/scripts/loop.sh *)' "$d/SKILL.md"; then backup "$d"; fi
+done
 for f in $(cd "$KIT" && find .claude/agents .claude/skills .claude/hooks .claude/scripts .claude/templates -type f); do
 	if [ -e "$f" ] && ! cmp -s "$KIT/$f" "$f"; then backup "$f"; fi
 done
@@ -40,17 +47,32 @@ for d in agents skills hooks scripts templates; do
 	done
 done
 chmod +x .claude/hooks/*.sh .claude/scripts/*.sh
-if [ -f .claude/loop.conf ]; then echo "  kept your .claude/loop.conf"; else cp "$KIT/.claude/loop.conf" .claude/loop.conf; fi
+if [ -f .claude/loop.conf ]; then
+	echo "  kept your .claude/loop.conf"
+	if ! grep -q '^PROFILE=' .claude/loop.conf; then
+		cp "$KIT/.claude/loop.conf" .claude/loop.conf.v0.2
+		echo "  NOTE your loop.conf predates profiles: keys it sets (e.g. MAX_FIX_ROUNDS, PLAN_MAX_LINES) pin those values"
+		echo "       whatever the profile. The v0.2 file is in .claude/loop.conf.v0.2 — copy your VERIFY_CMD/TEST_CMD/globs into it"
+		echo "       and rename it, or keep yours (loop.sh config shows what applies and why)."
+	fi
+else cp "$KIT/.claude/loop.conf" .claude/loop.conf; fi
 
+# Rules earlier kit versions added and this one dropped (enforcement is opt-in since v0.2).
+# Only these exact strings are removed on upgrade; rules you added yourself always stay.
+OLD_KIT_DENY='["Edit(/.claude/hooks/**)","Edit(/.claude/scripts/**)","Edit(/.claude/settings.json)","Edit(/.claude/loop.conf)","Read(.env)","Read(.env.*)","Read(*.pem)","Read(*.key)","Read(id_rsa*)","Read(id_ed25519*)"]'
 if [ -f .claude/settings.json ]; then
 	tmp=$(mktemp)
-	jq -s '
+	# kit hook entries (they call .claude/hooks/<kit hook>.sh) are replaced, not added twice;
+	# every other hook entry is kept as it is
+	jq -s --argjson olddeny "$OLD_KIT_DENY" '
+		def kithook: [.hooks[]?.command // "" | test("/\\.claude/hooks/(guard|on-command|on-agent-stop|on-prompt)\\.sh")] | any;
 		.[0] as $o | .[1] as $n
 		| ($o * {permissions: {
 				allow: ((($o.permissions.allow // []) + ($n.permissions.allow // [])) | unique),
-				deny:  ((($o.permissions.deny  // []) + ($n.permissions.deny  // [])) | unique)}})
-		| .hooks = (reduce ($n.hooks | keys[]) as $ev (($o.hooks // {});
-				.[$ev] = (((.[$ev] // []) + $n.hooks[$ev]) | unique)))
+				deny:  ((($o.permissions.deny  // []) - $olddeny + ($n.permissions.deny // [])) | unique)}})
+		| .hooks = (reduce ((($o.hooks // {}) | keys) + ($n.hooks | keys) | unique)[] as $ev (($o.hooks // {});
+				.[$ev] = ([(.[$ev] // [])[] | select(kithook | not)] + ($n.hooks[$ev] // []))
+				| if .[$ev] == [] then del(.[$ev]) else . end))
 	' .claude/settings.json "$KIT/.claude/settings.json" > "$tmp"
 	if jq -e --slurpfile a "$tmp" '. == $a[0]' .claude/settings.json >/dev/null; then
 		echo "  .claude/settings.json already up to date"
@@ -80,9 +102,11 @@ cat <<EOF
 
 Done. Next:
   1. $vline
-     (TEST_CMD is optional.) /implement refuses to start while VERIFY_CMD is empty.
-  2. Commit the kit:   git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
-  3. Check the setup:  .claude/scripts/loop.sh doctor
-  4. Start Claude Code from the repo root and accept the workspace-trust prompt (hooks need it).
-  5. /spec <what you want>   or   /quick <small change>
+     (TEST_CMD is optional.) /al-implement refuses to start while VERIFY_CMD is empty.
+  2. Pick a profile in .claude/loop.conf: PROFILE="balanced" (default), "fast" or "strict".
+     Every other knob is commented there; .claude/scripts/loop.sh config shows what applies.
+  3. Commit the kit:   git add .claude .gitignore && git commit -m "chore: add agent-loop kit"
+  4. Check the setup:  .claude/scripts/loop.sh doctor
+  5. Start Claude Code from the repo root and accept the workspace-trust prompt (hooks need it).
+  6. /al-spec <what you want>  or  /al-quick <small change>  — /al-status shows where you are at any time.
 EOF

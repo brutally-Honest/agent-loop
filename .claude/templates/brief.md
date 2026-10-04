@@ -5,9 +5,11 @@ mode: quick
 status: draft
 version: 1
 created: {{DATE}}
+branch: {{BRANCH}}
 approved:
 approved-by:
 sha256:
+fingerprint:
 ---
 # {{TITLE}}
 
@@ -15,7 +17,7 @@ sha256:
 <!-- What changes and why, 2-5 lines. fix: repro + expected vs actual. -->
 
 ## Acceptance
-<!-- At most 5 (more = use /spec).
+<!-- At most 5 (more = use /al-spec).
 - **AC1** — When <trigger>, the system shall <observable result>.
 -->
 
