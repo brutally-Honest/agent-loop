@@ -3,6 +3,8 @@
 ## v0.2
 
 ### Changed — what you'll notice
+- **Every kit command is `/al-*`:** `/al-spec`, `/al-plan`, `/al-approve`, `/al-implement`, `/al-change`, `/al-fix`, `/al-quick`, `/al-pause`, `/al-resume`, `/al-status`, `/al-answer`. The unprefixed v0.1 names (`/spec`, `/plan-feature`, `/approve`, `/implement`, `/quick`, `/amend`) and the early v0.2 ones are gone, with no aliases, so the kit never shadows a Claude Code built-in or a skill of yours. `install.sh` moves the kit's old skill folders to its backup folder and leaves your own skills alone. Below, command names are the pre-rename ones.
+- **`REVIEW=none` means no reviewer anywhere**, from any layer: task reviews, /al-quick, the branch review, fix rounds and resumed tasks (escalated ones included). The report says "Reviews: off".
 - **Opt-in enforcement.** Outside a kit build nothing blocks you, Claude or your own agents: the kit, specs and code are all editable. Kit agents are always constrained; approvals are always yours (Claude can't run `approve.sh`, write approval stamps or commit an `approve` subject). The v0.1 permission denies for kit files and secret reads are gone; `install.sh` removes them on upgrade, and secret-file protection now applies to kit agents only.
 - **Profiles and overrides.** `PROFILE=fast|balanced|strict` plus per-key overrides at run (`/implement` flags), task (`Model:`, `Review:`, `Verify:`), feature (`plan.md` frontmatter) and repo (`loop.conf`) level. `loop.sh config [T002]` and `/status --config` show each value and where it came from. `MAX_FIX_ROUNDS` is now `FIX_ROUNDS` (the old name still works).
 - **Faster tasks.** The script runs verify once per `VERIFY` policy; implementers run targeted tests only and reviewers never run verify. `REVIEW=risk` (balanced) reviews only risky tasks; the branch review still runs. Fix rounds continue the same implementer. Agents start from a context pack (`loop.sh task <ID>`): the task, the full text of its ACs and edge cases, the plan paragraphs that name them, answered questions, recent commits, its settings.
@@ -24,7 +26,7 @@ Checked on Claude Code 2.1.289.
 - **V4 holds, with a limit** — agent frontmatter accepts `effort:`, but the Agent tool has no per-dispatch effort, so there are no `EFFORT_*` settings; set it in the agent files if you want it.
 
 ### Also found while building it
-- `/plan`, `/status` and `/resume` share their names with Claude Code built-ins; the kit's commands win in a repo with the kit, hiding the built-ins there (see README, Honest limits).
+- `/plan`, `/status` and `/resume` shared their names with Claude Code built-ins and won over them in kit repos; that is why every kit command now carries the `al-` prefix.
 - Background agents' completion notices arrive as prompts; the auto-pause hook ignores them.
 - `BATCH_SMALL` (one implementer for several small tasks) is reserved but not built.
 
