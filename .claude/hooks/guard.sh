@@ -48,7 +48,10 @@ case $role in
 esac
 kit() { case $class in builder | reader | writer) return 0 ;; esac; return 1; }
 
-[ -n "$cwd" ] && cd "$cwd" 2>/dev/null
+# fail closed: without its working directory the guard can't tell which repo or policy applies
+if [ -n "$cwd" ] && ! cd "$cwd" 2>/dev/null; then
+	deny "the guard can't enter the working directory $cwd, so it can't check this call — blocked. Check that the directory exists and is readable."
+fi
 git rev-parse --show-toplevel >/dev/null 2>&1 || pass   # not a git repo: no policy
 # shellcheck source=../scripts/lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/lib.sh"
@@ -109,6 +112,7 @@ if [ "$tool" = Bash ]; then
 	loopsh() { has '^\.claude/scripts/loop\.sh( |$)'; }
 
 	has 'approve\.sh' && deny "approve.sh is human-only — the user types /al-approve (or runs it in a terminal)."
+	has 'pass-manual' && deny "loop.sh pass-manual is human-only — it records that the user ran a manual check. The user runs it in a terminal (or types: ! .claude/scripts/loop.sh pass-manual <ID> '<reason>')."
 	has '(^|[^[:alnum:]_-])git[[:space:]].*commit.*(: approve |: auto-approve )' \
 		&& deny "approval commits are made by approve.sh only — the user types /al-approve."
 
@@ -179,6 +183,13 @@ if [ "$tool" = Bash ]; then
 		has '^\.claude/scripts/loop\.sh (start|next|log|stop|finish|unlock|new|cr-new|gate|pause|answer|accept)([[:space:]]|$)' && deny "that loop.sh command belongs to the orchestrator, not to $role."
 		has '^\.claude/scripts/loop\.sh verify([[:space:]]|$)' && deny "the script runs the full verify once per task after you report DONE — run targeted tests instead: .claude/scripts/loop.sh test <args> (or the repo's test command for the packages you touched)."
 		has '(^|[^[:alnum:]_-])rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+)*(/|~|\$HOME|\.\.?)([[:space:]]|/?$)' && deny "$role may not delete the repo, home or root."
+		# the task commit spelled from this repo's root is the same commit; that one exact shape only
+		case $cmd in
+			"cd $REPO && git commit -F .agent-loop/commit-msg" \
+			| "cd $REPO && git commit --amend -F .agent-loop/commit-msg" \
+			| "cd $REPO && git commit --amend --no-edit")
+				allow "task commit (from the repo root)" ;;
+		esac
 		if single; then
 			case $(gitsub) in
 				add) allow "task commit: git add <paths>" ;;

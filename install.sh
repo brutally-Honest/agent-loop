@@ -3,7 +3,8 @@
 #
 #   ./install.sh /path/to/repo
 #
-# - copies .claude/{agents,skills,hooks,scripts,templates}; keeps your .claude/loop.conf if present
+# - copies .claude/{agents,skills,hooks,scripts,templates} (not the kit's own tests in
+#   .claude/scripts/tests/); keeps your .claude/loop.conf if present
 # - merges .claude/settings.json (your keys kept; permission rules and hooks added, deduplicated)
 # - adds .agent-loop/, .claude/worktrees/ and .claude/agent-loop-backup-*/ to .gitignore
 # - moves anything it would overwrite (and the old /run-feature + agent-bash-guard.sh) to
@@ -15,6 +16,12 @@ cd "$1"
 repo=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "$1 is not inside a git repository" >&2; exit 1; }
 cd "$repo"
 command -v jq >/dev/null 2>&1 || { echo "jq is required (the hooks use it): install jq first" >&2; exit 1; }
+# the kit's test run lints every kit script with shellcheck; the kit itself runs without it
+if ! command -v "${SHELLCHECK:-shellcheck}" >/dev/null 2>&1; then
+	echo "WARNING shellcheck is not installed. The kit runs without it, but its test run" >&2
+	echo "        (.claude/scripts/tests/run.sh in the agent-loop repo) fails without it. If you change" >&2
+	echo "        or test the kit: apt install shellcheck, or brew install shellcheck" >&2
+fi
 
 ts=$(date +%Y%m%d-%H%M%S)
 bk=".claude/agent-loop-backup-$ts"
@@ -34,17 +41,16 @@ for s in spec plan plan-feature approve implement amend change fix quick pause r
 	[ -f "$d/SKILL.md" ] || continue
 	if grep -qx "name: $s" "$d/SKILL.md" && grep -qF 'Bash(.claude/scripts/loop.sh *)' "$d/SKILL.md"; then backup "$d"; fi
 done
-for f in $(cd "$KIT" && find .claude/agents .claude/skills .claude/hooks .claude/scripts .claude/templates -type f); do
+# the files the kit installs; .claude/scripts/tests/ is the kit's own test suite and stays here
+kit_files() { (cd "$KIT" && find .claude/agents .claude/skills .claude/hooks .claude/scripts .claude/templates \
+	-path .claude/scripts/tests -prune -o -type f -print); }
+for f in $(kit_files); do
 	if [ -e "$f" ] && ! cmp -s "$KIT/$f" "$f"; then backup "$f"; fi
 done
 
-mkdir -p .claude
-for d in agents skills hooks scripts templates; do
-	mkdir -p ".claude/$d"
-	(cd "$KIT/.claude/$d" && find . -type f) | while IFS= read -r f; do
-		mkdir -p ".claude/$d/$(dirname "$f")"
-		cp "$KIT/.claude/$d/$f" ".claude/$d/$f"
-	done
+kit_files | while IFS= read -r f; do
+	mkdir -p "$(dirname "$f")"
+	cp "$KIT/$f" "$f"
 done
 chmod +x .claude/hooks/*.sh .claude/scripts/*.sh
 if [ -f .claude/loop.conf ]; then

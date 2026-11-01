@@ -36,7 +36,7 @@ _old_ac_text() { # file rev -> acceptance section of the file at rev
 _shall() { # file ids...
 	local f=$1 id line; shift
 	for id in "$@"; do
-		line=$(_ac_text "$f" | ac_line "$id")
+		line=$(_ac_text "$f" | ac_text "$id")
 		printf '%s' "$line" | grep -qiE 'shall|must' \
 			|| err "$id must state an observable result: 'When <trigger>, the system shall <result>'"
 	done
@@ -126,7 +126,7 @@ check_tasks() { # file [draft|approve]
 	for t in $tids; do
 		blk=$(printf '%s\n' "$body" | task_block_stdin "$t")
 		[ -n "$(printf '%s\n' "$blk" | head -1 | sed -E 's/^### T[0-9]+[[:space:]]*(—|-|:)?[[:space:]]*//')" ] || err "$t has no title"
-		for x in Do Tests AC Commit; do
+		for x in 'Do' Tests AC Commit; do
 			[ -n "$(printf '%s\n' "$blk" | field_stdin "$x")" ] || err "$t is missing '- $x:'"
 		done
 		acs=$(printf '%s\n' "$blk" | field_stdin AC)
@@ -135,7 +135,7 @@ check_tasks() { # file [draft|approve]
 			*)
 				[ -n "$(printf '%s' "$acs" | ac_refs)" ] || err "$t: '- AC:' must list AC ids, or say 'none — <reason>'"
 				for a in $(printf '%s' "$acs" | ac_refs); do
-					if printf '%s' "$acs" | grep -qE "$a[[:space:]]*\(remove\)"; then
+					if printf '%s' "$acs" | grep -qE "${a}[[:space:]]*\(remove\)"; then
 						in_list "$a" "$all" || err "$t: $a is not in spec.md"
 					else
 						in_list "$a" "$ids" || err "$t: $a is not an active AC in spec.md"
@@ -170,7 +170,7 @@ $t"
 	for t in $tids; do in_list "$t" "$dones" || opens="$opens $t"; done
 
 	prev=$(fm_get "$f" previous)
-	if [ -n "$prev" ]; then
+	if [ -n "$prev" ] && [ "$(fm_get "$f" status)" = draft ]; then
 		prevtxt=$(git show "$prev:$f" 2>/dev/null | strip_fm | strip_noise)
 		ptids=$(printf '%s\n' "$prevtxt" | task_ids_stdin)
 		maxprev=$(printf '%s\n' $ptids | sort | tail -1)
@@ -214,7 +214,7 @@ _cr_task_cover() { # file body verb id opens dones crname
 	local body=$2 verb=$3 id=$4 opens=$5 dones=$6 cr=${7%.md} t acs okrm=0 okadd=0 builtrm=0
 	for t in $opens; do
 		acs=$(printf '%s\n' "$body" | task_block_stdin "$t" | field_stdin AC)
-		if printf '%s' "$acs" | grep -qE "$id[[:space:]]*\(remove\)"; then okrm=1
+		if printf '%s' "$acs" | grep -qE "${id}[[:space:]]*\(remove\)"; then okrm=1
 		elif printf '%s' "$acs" | ac_refs | grep -qx "$id"; then
 			okadd=1
 			[ "$verb" = REMOVED ] && err "$cr removes $id but open task $t still builds it — drop it or mark '$id (remove)'"
@@ -315,7 +315,7 @@ check_cr_applied() { # cr-file target-file -> did the target apply the CR's AC d
 			REMOVED) printf '%s\n' "$cur" | ac_struck | grep -qx "$id" || err "${c##*/} removes $id — strike it in ${f##*/}: - ~~**$id**~~ — removed in vN (${c##*/}): reason" ;;
 			MODIFIED)
 				if ! printf '%s\n' "$cur" | ac_active | grep -qx "$id"; then err "${c##*/} modifies $id, but ${f##*/} has no active $id"
-				elif [ "$(printf '%s\n' "$cur" | ac_line "$id")" = "$(printf '%s\n' "$old" | ac_line "$id")" ]; then err "${c##*/} modifies $id, but its text in ${f##*/} is unchanged"
+				elif [ "$(printf '%s\n' "$cur" | ac_text "$id")" = "$(printf '%s\n' "$old" | ac_text "$id")" ]; then err "${c##*/} modifies $id, but its text in ${f##*/} is unchanged"
 				fi ;;
 		esac
 	done <<EOF

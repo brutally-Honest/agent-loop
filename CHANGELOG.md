@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.3
+
+Fixes found while running the kit on a real project, ported back with their tests.
+
+### Added
+- **`loop.sh accept <ID> '<reason>'` takes STOPPED tasks** (fix-round limit, or a fix round out of scope) as well as ESCALATED ones; for STOPPED the reason is required. Every accept commits its reason to research.md under `## Human decisions`.
+- **`loop.sh pass-manual <ID> '<reason>'`** passes a NEEDS-HUMAN task once you've done its manual check, and commits the reason to research.md. It is human-only: guard.sh denies it to Claude and every agent, and settings.json gets a `Bash(*pass-manual*)` deny rule (`install.sh` adds it on upgrade). The report and `Next:` say to run it.
+- **`TASK_CHECK_CMD`** (loop.conf, empty = off): a cheap must-hold check that runs after every task whose full verify is deferred (`every-N`, `targeted`, `end`, `off`). Red fails the task like a red verify; read-only like `VERIFY_CMD`; output in `.agent-loop/<f>/task-check.log`.
+- **`Kit: <action>` trailers** on every commit the kit makes (approve, change, reopen, answer, accept, pass-manual, add-fix, research).
+- **A shell test suite**, `.claude/scripts/tests/` (`run.sh`, `helpers.sh`, one `test_*.sh` per behaviour, and an approved e2e fixture in `fixtures/e2e/`). `run.sh` also lints every kit script, `install.sh` and `selftest.sh` with `shellcheck -S warning` and fails on any finding. `install.sh` doesn't copy the suite into your repo, and warns when shellcheck is missing.
+
+### Changed
+- **Every kit agent has a rule against getting around the checks:** no splitting, quoting, encoding or renaming strings, and no using another tool to do what a guard, hook or check blocked. Read/Edit/Write on a file is fine when only a Bash command naming it was blocked; a human-only command (approve, answer, change, pass-manual) never is, by any route; when unsure, stop and ask. The reviewer checks for it, and any instance is ESCALATE.
+- **The orchestrator has its own version of that rule**, in LOOP.md and the `/al-*` skills that drive it (`al-implement`, `al-resume`, `al-approve`, `al-fix`, `al-quick`, `al-answer`): approve, `/al-change` and pass-manual are human-only by any route; `loop.sh answer` runs only after the human answered, with their answer as given (a picked option's own text, never a rewording); loop state and task status are never written by hand.
+- **A task's work is its `Task: <id>` commits**, not every commit in its range. Kit commits (`Kit:` trailer) are skipped but may only touch the feature's specs folder; an implementer's own `Blocked:` question commit is skipped if it touches only research.md. Any other untrailered commit still fails the check. Diffs, review triggers and test-file checks use the task's own commits.
+- **Approvals commit only the files they wrote** (plus a research.md that was never committed yet). Your draft edits elsewhere in `specs/<f>/` stay uncommitted.
+- **Fix rounds count when an implementer runs them**, not when asked for, so `loop.sh next` instead of a dispatch doesn't burn a round. **Fix rounds stay in the task's files**: those its commits changed when the first round was asked for, plus test files in their folders. Anything else stops the task as `STOPPED scope`.
+- **The report's `Next:` line follows the latest stop** and says what to do for its kind (fix-round limit, scope, escalation, a failed pre-task check, a contract break, uncommitted work).
+
+### Fixed
+- A resumed task (after BLOCKED, STOPPED or an interruption) keeps its base commit when it's still an ancestor of HEAD, so work you committed for it in between counts.
+- Subagent reports (`<agent-message>` prompts) no longer pause a build.
+- An approved tasks.md whose done task was changed by an approved change request no longer stops the loop; the done-task check runs only while re-planning a draft.
+- The guard allows the task commit and the fix-round amends spelled from the repo root (`cd <repo> && git commit -F .agent-loop/commit-msg`, `… --amend -F …`, `… --amend --no-edit`) — those exact strings only.
+- Acceptance criteria wrapped over several lines are compared and shown whole (an edit on a continuation line was missed, and the task pack cut ACs short).
+- `/al-fix` commit subjects fit 72 bytes, cut at a word, with the full bug text in the body; a failed tasks.md commit puts tasks.md back.
+- `VERIFY_CMD` output is written outside the repo and moved into `.agent-loop/` only after verify exits, so a verify that runs the kit's own test runner can go green.
+- `/al-answer Q2: <text>` (or `Q2,`) works.
+- The hooks fail closed when they can't enter their working directory: the guard denies the call and says why, the others exit quietly (they used to carry on in the wrong directory).
+- Every shellcheck warning in the kit and selftest.sh.
+
+### Upgrading from v0.2
+Re-run `install.sh`. Your `loop.conf` is kept; `TASK_CHECK_CMD` defaults to empty, so nothing changes until you set it. `settings.json` gains the `pass-manual` deny rule; your own rules stay.
+
 ## v0.2
 
 ### Changed — what you'll notice

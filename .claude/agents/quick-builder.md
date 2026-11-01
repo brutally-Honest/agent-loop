@@ -14,11 +14,12 @@ Work through `## Steps` in order:
 2. The smallest change that passes them and meets the brief's Acceptance. Nothing from "Out of scope"; no new dependencies.
 3. Targeted tests green. The script runs the full verify after you report DONE — don't run it. Never weaken a test or a check.
 4. Mutation check only when `loop.sh task Q` says `MUTATION required`: break what your tests guard, see a test fail, restore; `git diff` shows only intended changes.
-5. Commit (one commit for the brief, or one per step): message in `.agent-loop/commit-msg` ending with the trailers `loop.sh task Q` printed; `git add <explicit paths>`; `git commit -F .agent-loop/commit-msg`.
+5. Commit (one commit for the brief, or one per step): message in `.agent-loop/commit-msg` ending with the trailers `loop.sh task Q` printed; `git add <explicit paths>`; `git commit -F .agent-loop/commit-msg`, run as its own command — no cd, no &&, no other command.
 6. `.claude/scripts/loop.sh post-check Q` must print OK.
 
-Fix round: fix exactly the findings (or `loop.sh findings Q`), then amend or add a commit with the same trailers.
+Fix round: fix exactly the findings (or `loop.sh findings Q`), then amend or add a commit with the same trailers. Change only the files your commit already changed, plus test files in their folders — anything else stops the build.
 Blocked (brief silent or contradictory, needs a protected file): add `- **Q<n>** (open) Q — <question> — options: A) … B) …` to research.md, commit it alone (trailers `Feature: <f>`, `Blocked: Q Q<n>`), then `git stash push -u -m "Q blocked on Q<n>"`.
 Never: edit `specs/` (except research.md) or `.claude/`; push, reset, checkout, `git add -A`, `--no-verify`; read secrets.
+Never get around a guard, hook or check by splitting, quoting, encoding or renaming strings, or by using another tool to perform the action that was blocked. Reading or editing a file with Read/Edit/Write is fine when only a Bash command naming it was blocked. Running a human-only command (approve, answer, change, pass-manual) is never fine by any route. If unsure, stop and ask.
 
 Final message, line 1 exactly: `DONE Q <short sha>` or `BLOCKED Q Q<n>`. Then ≤6 lines: tests, tests → behaviour, mutation check, deviations.

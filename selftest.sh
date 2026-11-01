@@ -22,6 +22,11 @@ printf 'verify:\n\t@for t in tests/*_test.sh; do sh $$t || exit 1; done\n' > Mak
 git add -A && git commit -qm init
 inst=$("$KIT/install.sh" .) || { echo "install failed"; exit 1; }
 
+echo "== install.sh copies the kit, not its own tests"
+ok test -x .claude/scripts/loop.sh
+bad test -e .claude/scripts/tests
+has "a fresh install denies pass-manual (human-only)" "$(jq -c '.permissions.deny | index("Bash(*pass-manual*)") != null' .claude/settings.json)" '^true$'
+
 echo "== VERIFY_CMD: no default, never a silent green"
 has "install prints the suggestion" "$inst" 'Suggested for this repo: VERIFY_CMD="make verify"'
 has "suggest-verify: Makefile verify target" "$(.claude/scripts/loop.sh suggest-verify)" "^make verify$"
@@ -112,7 +117,7 @@ EOF
 
 echo "== opt-in enforcement: free outside a run, kit agents always constrained"
 eq() { [ "$2" = "$3" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL $1: got $2, expected $3"; }; }
-eq "no kit skill without the al- prefix" "$(ls "$KIT/.claude/skills" | grep -vc '^al-')" 0
+eq "no kit skill without the al- prefix" "$(find "$KIT/.claude/skills" -mindepth 1 -maxdepth 1 ! -name 'al-*' | wc -l | tr -d ' ')" 0
 eq "each skill's name is its dir" "$(for d in "$KIT"/.claude/skills/*/; do n=$(basename "$d"); grep -qx "name: $n" "$d/SKILL.md" || echo "$n"; done)" ""
 
 eq "main edits the kit outside a run" "$(ge main .claude/scripts/loop.sh 'set -uo pipefail' 'set -euo pipefail')" none
@@ -206,6 +211,8 @@ eq "a hook for an unprefixed name ignores it" "$(printf '{"command_name":"status
 eq "another session's prompt doesn't pause it" "$(prompt s9 'hello')" ""
 eq "a background agent's notification doesn't pause it" "$(prompt s1 '<task-notification>
 <task-id>a1</task-id><status>completed</al-status></task-notification>')" ""
+eq "a subagent's report doesn't pause it" "$(prompt s1 '<agent-message from="implementer">
+DONE T001 abc1234</agent-message>')" ""
 has "an unprefixed /status is a plain prompt: it pauses the run" "$(prompt s1 '/status')" "build was paused"
 $L start --session s1 >/dev/null
 has "a plain prompt pauses the run" "$(prompt s1 'actually, rename sub to minus')" "build was paused"
@@ -608,7 +615,7 @@ cp .claude/loop.conf "$X/conf.rn"
 # (a) loop.conf: a full feature, a fix round, a resumed IMPLEMENTED task, an escalated task resumed with reviews off
 mkfeat rnconf 3 || exit 1
 printf 'REVIEW="none"\n' >> .claude/loop.conf; git commit -qam "chore: reviews off"
-TX=; out_all=$($L start --session s20; $L next)
+out_all=$($L start --session s20; $L next)
 impl T001; out_all="$out_all
 $($L log T001 implementer "DONE T001 x")
 $($L next)"
@@ -702,16 +709,20 @@ test -f "$U/.claude/loop.conf.v0.2" && pass=$((pass+1)) || { fail=$((fail+1)); e
 for o in plan implement status; do bad test -d "$U/.claude/skills/$o"; done
 has "old kit skills go to the backup folder" "$(ls -d "$U"/.claude/agent-loop-backup-*/.claude/skills/* 2>/dev/null)" "skills/implement"
 has "a user skill named fix is kept" "$(cat "$U/.claude/skills/fix/SKILL.md")" "my own fix skill"
-eq "the kit installs only al- skills" "$(ls "$U/.claude/skills" | grep -v '^al-' | tr '\n' ' ')" "fix "
+eq "the kit installs only al- skills" "$(cd "$U/.claude/skills" && for d in *; do case $d in al-*) ;; *) printf '%s ' "$d" ;; esac; done)" "fix "
 eq "upgrade keeps your loop.conf" "$(cat "$U/.claude/loop.conf")" "$(printf 'VERIFY_CMD="make verify"\nMAX_FIX_ROUNDS=2')"
 us=$(cat "$U/.claude/settings.json")
 eq "upgrade drops every v0.1 kit deny" "$(jq -c '[.permissions.deny[] | select(startswith("Edit(") or startswith("Read("))] | length' <<<"$us")" 0
 eq "upgrade keeps the user's deny" "$(jq -c '.permissions.deny | index("Bash(rm -rf *)") != null' <<<"$us")" true
 eq "upgrade keeps the approve.sh deny" "$(jq -c '.permissions.deny | index("Bash(*approve.sh*)") != null' <<<"$us")" true
+eq "upgrade adds the pass-manual deny" "$(jq -c '.permissions.deny | index("Bash(*pass-manual*)") != null' <<<"$us")" true
 eq "upgrade keeps the user's hook" "$(jq -c '[.hooks.PreToolUse[].hooks[].command] | index("my-own-hook.sh") != null' <<<"$us")" true
 eq "upgrade has one guard entry" "$(jq -c '[.hooks.PreToolUse[].hooks[].command | select(test("guard.sh"))] | length' <<<"$us")" 1
 eq "upgrade has one on-command entry" "$(jq -c '[.hooks.UserPromptExpansion[].hooks[].command] | length' <<<"$us")" 1
 eq "upgrade adds the prompt hook" "$(jq -c '[.hooks.UserPromptSubmit[].hooks[].command | select(test("on-prompt.sh"))] | length' <<<"$us")" 1
+W=$(mktemp -d "$X/sc.XXXXXX"); (cd "$W" && git init -q)
+has "install warns when shellcheck is missing" "$(SHELLCHECK=/no/such/shellcheck "$KIT/install.sh" "$W" 2>&1)" "shellcheck is not installed"
+eq "…and only then" "$(cd "$W" && "$KIT/install.sh" . 2>&1 | grep -c 'shellcheck is not installed')" 0
 "$KIT/install.sh" "$U" >/dev/null
 eq "install is idempotent" "$(cat "$U/.claude/settings.json")" "$us"
 
