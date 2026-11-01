@@ -22,6 +22,10 @@ printf 'verify:\n\t@for t in tests/*_test.sh; do sh $$t || exit 1; done\n' > Mak
 git add -A && git commit -qm init
 inst=$("$KIT/install.sh" .) || { echo "install failed"; exit 1; }
 
+echo "== install.sh copies the kit, not its own tests"
+ok test -x .claude/scripts/loop.sh
+bad test -e .claude/scripts/tests
+
 echo "== VERIFY_CMD: no default, never a silent green"
 has "install prints the suggestion" "$inst" 'Suggested for this repo: VERIFY_CMD="make verify"'
 has "suggest-verify: Makefile verify target" "$(.claude/scripts/loop.sh suggest-verify)" "^make verify$"
