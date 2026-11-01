@@ -6,6 +6,8 @@ Think of a building contract. You sign the blueprint (**spec**). An architect dr
 
 Works in any git repository and any language. The one repo-specific setting is the command that says "the repo is healthy" (`VERIFY_CMD`, e.g. `npm run lint && npm test` or `go vet ./... && go test ./...`). It has no default: `/al-implement` refuses to start until you set it, and `loop.sh suggest-verify` guesses one from your repo.
 
+**v0.3** adds `accept` for stopped tasks, a human-only `pass-manual` for manual checks, `TASK_CHECK_CMD`, `Kit:` trailers on every kit commit, and a shell test suite linted with shellcheck. See [CHANGELOG.md](CHANGELOG.md).
+
 **v0.2 in one paragraph:** the kit stays out of your way until you start a build — outside a kit run you (and Claude, and your other agents) can edit anything. A task costs one implementer plus script checks; reviewers look at risky tasks and at the whole branch. Every speed/cost knob is a setting you can override per run, task, feature or repo. Approvals survive edits that don't touch the contract. Everything — status, changes, fixes, answers, pause and resume — is a chat command. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -123,12 +125,14 @@ The implementer's model for a task: run `--model T002=…` > the task's `Model:`
 | **Build** | `/al-implement [flags]` | Per task: implementer (targeted tests, commit) → script checks + verify per policy → reviewer if policy says → fix rounds → next. Then the branch review and a report. |
 | A task needs an answer | answer the card | The implementer recorded `Qn` in research.md and stashed its attempt; your answer is written in and committed, the attempt comes back, the same task continues. Away? `/al-answer Qn <text>`, then `/al-resume`. |
 | The reviewer escalates | pick on the card | *Change the spec* (build pauses; `/al-change …`), *I'll fix the code* (build pauses; fix, `/al-resume` — the task is reviewed again), *Accept as is* (the task passes and the accepted risk goes in the report). |
-| Fix rounds used up | fix by hand, or drop it | The report shows the attempt and its base; fix it and `/al-resume`, or `git reset --hard <base>`, edit the task, `/al-resume`. |
+| Fix rounds used up (`STOPPED`) | fix by hand, accept it, or drop it | The report shows the attempt and its base, and its `Next:` line follows the latest stop. Fix it (commit with the task's trailers) and `/al-resume`; or `loop.sh accept <ID> '<reason>'` — the task passes as it is, and the reason (required) is committed to research.md under "Human decisions"; or `git reset --hard <base>`, edit the task, `/al-resume`. |
+| A fix round changed files outside the task (`STOPPED scope`) | undo them, or accept | A fix round may change only the files the task's own commits changed, plus test files in their folders. Anything else stops the task (no further round): undo it by hand and `/al-resume`, or `loop.sh accept <ID> '<reason>'`. |
+| A task needs a manual check (`NEEDS-HUMAN`) | do the check, then record it | The report lists it with its `Manual:` line. Once it passes, run `loop.sh pass-manual <ID> '<what you checked>'` in your terminal (or `! .claude/scripts/loop.sh pass-manual …` in Claude Code): the task becomes PASS and the reason is committed to research.md. Human-only, like approvals. |
 | **Change** something approved | `/al-change <what>` | Nothing built yet → reopened and edited, then `/al-approve …`. Built → change request (AC delta, impacted done tasks, what reopens) → `/al-approve change` → reopened artifacts are revised; done tasks stay byte-identical and rework becomes new tasks. |
 | Code drifted from the spec | `/al-change --reconcile` | The impact-analyst proposes, per divergence, a spec update or remediation tasks. |
 | **Bug** | `/al-fix <bug>` | See [Commands](#commands). |
 | **Pause** | type anything, Esc, `/al-pause`, or `loop.sh pause` | See below. |
-| Your own commits mid-feature | commit as usual | Fine between tasks and while paused: the next task starts from HEAD and checks only its own commits. |
+| Your own commits mid-feature | commit as usual | Fine between tasks and while paused: the next task starts from HEAD and checks only its own commits. A task's work is its `Task: <id>` commits; the kit's own commits (approve, change, reopen, answer, accept, pass-manual, add-fix, research) carry a `Kit: <action>` trailer and never count as task work — but may only touch the feature's `specs/` folder. A task that resumes after BLOCKED or STOPPED keeps its base, so work you committed for it in between counts. |
 | **Ship** | read the report, open the PR | The loop never pushes, merges or approves. |
 | After merge | `/al-spec --supersedes NNN <change>` | Merged specs are history; the new spec records what it replaces (`loop.sh lineage`). |
 | Housekeeping | `/al-status`, `loop.sh report`, `loop.sh impact AC2`, `loop.sh doctor` | |
@@ -157,8 +161,9 @@ Enforcement is **opt-in**: nothing constrains the main session unless it is runn
 | The orchestrator only orchestrates | during a build, in that session | A run flag (`.agent-loop/<f>/lock` = its session id): guard.sh denies its code edits, git writes and file-writing shell commands; it may call `loop.sh`. Typing a message releases it (the build pauses). |
 | Kit agents stay in their lane | always | implementer / quick-builder: code anywhere except `specs/` (bar research.md), `.claude/` and `PROTECTED_GLOBS`; git only in the exact shapes a task commit needs (no push, reset, checkout, rebase, `add -A`, `--no-verify`); commits via `git commit -F .agent-loop/commit-msg`; no full verify (the script owns it). reviewer / spec-critic: read-only, single allow-listed commands. planner: plan.md and tasks.md, only once the spec is approved. impact-analyst: the change request. None of them reads `.env*`, `*.pem`, `*.key`, `id_*`. |
 | Agents report in a fixed format | always | The **SubagentStop** hook blocks an agent until line 1 matches its contract and the repo matches the claim (3 tries, then the run stops). |
-| "Done" is proven, not claimed | during a build | Post-task checks (commits, trailers, clean tree, no kit/spec/protected changes, tests touched, approvals valid) and `VERIFY_CMD`, run by `loop.sh`. |
-| Fix rounds are limited | during a build | `loop.sh` counts them (`FIX_ROUNDS`). |
+| Manual checks are yours | always | `loop.sh pass-manual` is denied to Claude and every agent by guard.sh and by a `Bash(*pass-manual*)` deny rule in settings.json; `install.sh` adds the rule on upgrade. |
+| "Done" is proven, not claimed | during a build | Post-task checks (the task's `Task:` commits, trailers, clean tree, no kit/spec/protected changes, tests touched, approvals valid) and `VERIFY_CMD`, plus `TASK_CHECK_CMD` after every task whose verify is deferred, run by `loop.sh`. |
+| Fix rounds are limited | during a build | `loop.sh` counts them (`FIX_ROUNDS`) — a round counts once an implementer has reported on it, so asking again doesn't use one up — and keeps them to the task's own files. |
 | History isn't rewritten | always | Done task blocks are compared byte for byte; AC ids are struck, never deleted; merged specs can't be changed. |
 
 ---
@@ -171,7 +176,7 @@ Enforcement is **opt-in**: nothing constrains the main session unless it is runn
 - **Prompts that Claude Code itself generates** (background-agent `<task-notification>`s, command output) also reach the prompt hook, with no field saying so; the hook recognises them by their opening tag. A new kind of generated prompt could pause a build until the hook learns it.
 - **Models per dispatch, effort per agent file.** The Agent tool's `model` overrides an agent's frontmatter (checked), so models are per run/task/feature. Reasoning effort can only be set in an agent's frontmatter (`effort: low|medium|high|xhigh|max`, checked), not per dispatch — so there are no `EFFORT_*` settings.
 - **`REVIEW=risk` trusts its triggers.** A low-risk task that is subtly wrong is only seen by the branch review (or by nobody with `REVIEW=none`). Mark tasks `Risk: high` generously.
-- **`TRAILERS=off`** keeps the task ↔ commit map only in local state (`.agent-loop/<f>/commits`); a fresh clone can't rebuild it.
+- **`TRAILERS=off`** keeps the task ↔ commit map only in local state (`.agent-loop/<f>/commits`); a fresh clone can't rebuild it. Without `Task:` trailers, every commit in a task's range that has no `Kit:` trailer counts as the task's work (kit commits always carry `Kit:`).
 - **Squash merges** flatten the task commits and their trailers on the base branch; `impact` and per-task history are only on the feature branch (approvals and specs survive in `specs/`).
 - **`BATCH_SMALL`** (one implementer for several small tasks) is reserved, not built.
 - Tasks run one at a time. Hooks need `jq`, workspace trust and a recent Claude Code; without `jq` the guard denies everything on purpose.
@@ -190,18 +195,21 @@ Enforcement is **opt-in**: nothing constrains the main session unless it is runn
 | **POSIX awk, sed, grep** | Parsing specs and tasks | Standard on Linux and macOS |
 | Workspace trust | Project allow rules and hooks apply | Prompts for every `loop.sh` call; hooks may be skipped |
 | **python3** + **make** | Only `selftest.sh` | The kit itself doesn't need them |
+| **shellcheck** | Only the kit's test run (`.claude/scripts/tests/run.sh`), which lints every kit script with `shellcheck -S warning` | The test run fails and says to install it (`apt install shellcheck` / `brew install shellcheck`); `install.sh` warns. The kit itself doesn't need it |
 
 | Platform | Status |
 |---|---|
-| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils) | **Tested.** `selftest.sh` passes 379/379 checks. Real headless runs in Claude Code 2.1.289 with every agent on haiku: `/al-quick` → `/al-approve brief` → build; `/al-spec` → `/al-approve spec` → `/al-plan` → `/al-approve plan` (one commit for plan + tasks) → `/al-implement --profile fast --model T001=haiku`; `/al-change` on a built feature → change request → `/al-approve change` → spec, plan and tasks revised with the done task untouched → build; a build paused mid-task and `/al-resume`d. |
+| Linux (Ubuntu, bash 5.2, mawk 1.3.4, GNU coreutils) | **Tested.** `selftest.sh` passes 386/386 checks and `.claude/scripts/tests/run.sh` passes all its tests with shellcheck 0.11 clean. Real headless runs in Claude Code 2.1.289 with every agent on haiku: `/al-quick` → `/al-approve brief` → build; `/al-spec` → `/al-approve spec` → `/al-plan` → `/al-approve plan` (one commit for plan + tasks) → `/al-implement --profile fast --model T001=haiku`; `/al-change` on a built feature → change request → `/al-approve change` → spec, plan and tasks revised with the done task untouched → build; a build paused mid-task and `/al-resume`d. |
 | macOS (bash 3.2, BSD tools) | **Not tested.** The scripts avoid bash-4 features and GNU-only flags, and pass under mawk. Run `./selftest.sh` once. |
 | Windows | Not supported natively. Use WSL. |
 | Claude Code desktop / IDE / cloud | **Not tested.** Same hooks and settings; only the CLI was exercised. |
 | Agents on sonnet/opus | **Not tested end to end in v0.2** (the real runs used haiku for cost). |
 
-`./selftest.sh` exercises every gate, check and hook in a throwaway repo with simulated agents and no model calls. It takes about a minute and a half and should print `all 379 checks passed`.
+`./selftest.sh` exercises every gate, check and hook in a throwaway repo with simulated agents and no model calls. It takes about a minute and a half and should print `all 386 checks passed`.
 
-`install.sh` is idempotent (re-run it to upgrade). It copies `.claude/{agents,skills,hooks,scripts,templates}`, keeps an existing `loop.conf` (a pre-v0.2 one gets a `loop.conf.v0.2` next to it), **merges** `.claude/settings.json` — your keys and rules stay, the kit's hook entries are replaced rather than duplicated, and the deny rules v0.1 added (edits of the kit, secret reads) are removed — and gitignores `.agent-loop/`, `.claude/worktrees/` and its backup folders. Anything it overwrites goes to `.claude/agent-loop-backup-<timestamp>/`. Your own templates go in `.claude/templates.local/<name>.md`.
+`.claude/scripts/tests/run.sh [test_name.sh ...]` runs the kit's shell tests: one file per behaviour (`test_*.sh`), each in its own throwaway repo — several on an approved one-task feature cloned from `fixtures/e2e/repo.bundle` (rebuilt with `fixtures/e2e/make.sh`, which needs you to run the approvals). It first lints every kit script, `install.sh` and `selftest.sh` with `shellcheck -S warning`, fails on any finding or when shellcheck is missing, and fails if the real `.agent-loop/` changed during the run. It takes about a minute and should print `all kit tests passed`. Run both before a release.
+
+`install.sh` is idempotent (re-run it to upgrade). It copies `.claude/{agents,skills,hooks,scripts,templates}` (not the kit's own `scripts/tests/`), warns when shellcheck is missing, keeps an existing `loop.conf` (a pre-v0.2 one gets a `loop.conf.v0.2` next to it), **merges** `.claude/settings.json` — your keys and rules stay, the kit's hook entries are replaced rather than duplicated, the kit's deny rules (`approve.sh`, `pass-manual`) are added, and the deny rules v0.1 added (edits of the kit, secret reads) are removed — and gitignores `.agent-loop/`, `.claude/worktrees/` and its backup folders. Anything it overwrites goes to `.claude/agent-loop-backup-<timestamp>/`. Your own templates go in `.claude/templates.local/<name>.md`.
 
 ---
 
@@ -215,12 +223,13 @@ Enforcement is **opt-in**: nothing constrains the main session unless it is runn
   hooks/       guard.sh (PreToolUse) · on-command.sh (UserPromptExpansion) · on-prompt.sh (UserPromptSubmit)
                on-agent-stop.sh (SubagentStop)
   scripts/     loop.sh (state machine) · approve.sh (yours only) · validate.sh · lib.sh
+    tests/     run.sh · helpers.sh · test_*.sh · fixtures/e2e/   (kit repo only, not installed)
   templates/   spec · plan · tasks · brief · research · cr      (templates.local/ overrides them)
   loop.conf    your settings
   settings.json
 install.sh · selftest.sh · README.md · CHANGELOG.md    (kit root, not copied into your repo)
 specs/NNN-slug/        spec.md | brief.md, plan.md, tasks.md, research.md, changes/CR-nnn.md   (committed)
-.agent-loop/NNN-slug/  run.log, state, run.conf, verify.log, commits, per-task base/rounds/findings (gitignored)
+.agent-loop/NNN-slug/  run.log, state, run.conf, verify.log, task-check.log, commits, laststop, per-task base/rounds/findings (gitignored)
 ```
 
 | Agent | Model (per settings) | Writes |
@@ -246,7 +255,9 @@ specs/NNN-slug/        spec.md | brief.md, plan.md, tasks.md, research.md, chang
 | `verify`, `test <args>` | Run `VERIFY_CMD` / `TEST_CMD` |
 | `doctor`, `suggest-verify` | Setup check; a `VERIFY_CMD` guess |
 | `task <ID>` | A task's context pack (what agents start from) |
-| `new`, `gate`, `start`, `next`, `log`, `stop`, `finish`, `answer`, `accept`, `dirty`, `add-fix`, `cr-new`, `findings`, `review-info`, `post-check`, `resolve` | Used by the skills, hooks and agents |
+| `accept <ID> '<reason>'` | Pass a task the reviewer ESCALATED or the loop STOPPED, as it is. The reason (required for STOPPED) is committed to research.md under "Human decisions" |
+| `pass-manual <ID> '<reason>'` | **Human-only.** Pass a NEEDS-HUMAN task once its manual check passed; the reason is committed to research.md |
+| `new`, `gate`, `start`, `next`, `log`, `stop`, `finish`, `answer`, `dirty`, `add-fix`, `cr-new`, `findings`, `review-info`, `post-check`, `resolve` | Used by the skills, hooks and agents |
 
 ## Configuration (`.claude/loop.conf`)
 
@@ -257,6 +268,7 @@ Besides the [profile keys](#profiles-and-overrides):
 | `PROFILE` | `balanced` | The defaults for every profile key |
 | `VERIFY_CMD` | empty (**required**) | Tests + lint + build; exit 0 = green. Must not modify files. Empty = `/al-implement` refuses, `doctor` fails, `loop.sh verify` is red. |
 | `TEST_CMD` | empty | Lets agents run a subset: `loop.sh test ./pkg -run TestX` |
+| `TASK_CHECK_CMD` | empty (off) | A cheap check that must hold after **every** task (an architecture or import-boundary test, a schema check). Runs after each task whose full verify is deferred (`VERIFY=every-N`, `targeted`, `end`, `off`); red fails the task like a red verify. Must not modify files. Output in `.agent-loop/<f>/task-check.log` |
 | `BASE_BRANCH` | auto | origin/HEAD, then main, master, trunk, develop |
 | `CONTRACT_SECTIONS` | `Goal\|Non-goals\|Acceptance criteria\|Edge cases\|Constraints` | Spec sections an approval covers |
 | `QUICK_MAX_ACS` / `QUICK_MAX_STEPS` | 5 / 5 | Size gate for `/al-quick` |
