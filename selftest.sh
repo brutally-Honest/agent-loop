@@ -25,6 +25,7 @@ inst=$("$KIT/install.sh" .) || { echo "install failed"; exit 1; }
 echo "== install.sh copies the kit, not its own tests"
 ok test -x .claude/scripts/loop.sh
 bad test -e .claude/scripts/tests
+has "a fresh install denies pass-manual (human-only)" "$(jq -c '.permissions.deny | index("Bash(*pass-manual*)") != null' .claude/settings.json)" '^true$'
 
 echo "== VERIFY_CMD: no default, never a silent green"
 has "install prints the suggestion" "$inst" 'Suggested for this repo: VERIFY_CMD="make verify"'
@@ -714,6 +715,7 @@ us=$(cat "$U/.claude/settings.json")
 eq "upgrade drops every v0.1 kit deny" "$(jq -c '[.permissions.deny[] | select(startswith("Edit(") or startswith("Read("))] | length' <<<"$us")" 0
 eq "upgrade keeps the user's deny" "$(jq -c '.permissions.deny | index("Bash(rm -rf *)") != null' <<<"$us")" true
 eq "upgrade keeps the approve.sh deny" "$(jq -c '.permissions.deny | index("Bash(*approve.sh*)") != null' <<<"$us")" true
+eq "upgrade adds the pass-manual deny" "$(jq -c '.permissions.deny | index("Bash(*pass-manual*)") != null' <<<"$us")" true
 eq "upgrade keeps the user's hook" "$(jq -c '[.hooks.PreToolUse[].hooks[].command] | index("my-own-hook.sh") != null' <<<"$us")" true
 eq "upgrade has one guard entry" "$(jq -c '[.hooks.PreToolUse[].hooks[].command | select(test("guard.sh"))] | length' <<<"$us")" 1
 eq "upgrade has one on-command entry" "$(jq -c '[.hooks.UserPromptExpansion[].hooks[].command] | length' <<<"$us")" 1

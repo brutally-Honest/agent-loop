@@ -16,7 +16,8 @@
       "Bash(git blame *)"
     ],
     "deny": [
-      "Bash(*approve.sh*)"
+      "Bash(*approve.sh*)",
+      "Bash(*pass-manual*)"
     ]
   },
   "hooks": {
