@@ -117,7 +117,7 @@ EOF
 
 echo "== opt-in enforcement: free outside a run, kit agents always constrained"
 eq() { [ "$2" = "$3" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL $1: got $2, expected $3"; }; }
-eq "no kit skill without the al- prefix" "$(ls "$KIT/.claude/skills" | grep -vc '^al-')" 0
+eq "no kit skill without the al- prefix" "$(find "$KIT/.claude/skills" -mindepth 1 -maxdepth 1 ! -name 'al-*' | wc -l | tr -d ' ')" 0
 eq "each skill's name is its dir" "$(for d in "$KIT"/.claude/skills/*/; do n=$(basename "$d"); grep -qx "name: $n" "$d/SKILL.md" || echo "$n"; done)" ""
 
 eq "main edits the kit outside a run" "$(ge main .claude/scripts/loop.sh 'set -uo pipefail' 'set -euo pipefail')" none
@@ -615,7 +615,7 @@ cp .claude/loop.conf "$X/conf.rn"
 # (a) loop.conf: a full feature, a fix round, a resumed IMPLEMENTED task, an escalated task resumed with reviews off
 mkfeat rnconf 3 || exit 1
 printf 'REVIEW="none"\n' >> .claude/loop.conf; git commit -qam "chore: reviews off"
-TX=; out_all=$($L start --session s20; $L next)
+out_all=$($L start --session s20; $L next)
 impl T001; out_all="$out_all
 $($L log T001 implementer "DONE T001 x")
 $($L next)"
@@ -709,7 +709,7 @@ test -f "$U/.claude/loop.conf.v0.2" && pass=$((pass+1)) || { fail=$((fail+1)); e
 for o in plan implement status; do bad test -d "$U/.claude/skills/$o"; done
 has "old kit skills go to the backup folder" "$(ls -d "$U"/.claude/agent-loop-backup-*/.claude/skills/* 2>/dev/null)" "skills/implement"
 has "a user skill named fix is kept" "$(cat "$U/.claude/skills/fix/SKILL.md")" "my own fix skill"
-eq "the kit installs only al- skills" "$(ls "$U/.claude/skills" | grep -v '^al-' | tr '\n' ' ')" "fix "
+eq "the kit installs only al- skills" "$(cd "$U/.claude/skills" && for d in *; do case $d in al-*) ;; *) printf '%s ' "$d" ;; esac; done)" "fix "
 eq "upgrade keeps your loop.conf" "$(cat "$U/.claude/loop.conf")" "$(printf 'VERIFY_CMD="make verify"\nMAX_FIX_ROUNDS=2')"
 us=$(cat "$U/.claude/settings.json")
 eq "upgrade drops every v0.1 kit deny" "$(jq -c '[.permissions.deny[] | select(startswith("Edit(") or startswith("Read("))] | length' <<<"$us")" 0
