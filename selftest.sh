@@ -210,6 +210,8 @@ eq "a hook for an unprefixed name ignores it" "$(printf '{"command_name":"status
 eq "another session's prompt doesn't pause it" "$(prompt s9 'hello')" ""
 eq "a background agent's notification doesn't pause it" "$(prompt s1 '<task-notification>
 <task-id>a1</task-id><status>completed</al-status></task-notification>')" ""
+eq "a subagent's report doesn't pause it" "$(prompt s1 '<agent-message from="implementer">
+DONE T001 abc1234</agent-message>')" ""
 has "an unprefixed /status is a plain prompt: it pauses the run" "$(prompt s1 '/status')" "build was paused"
 $L start --session s1 >/dev/null
 has "a plain prompt pauses the run" "$(prompt s1 'actually, rename sub to minus')" "build was paused"
