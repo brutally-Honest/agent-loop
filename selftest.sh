@@ -720,6 +720,9 @@ eq "upgrade keeps the user's hook" "$(jq -c '[.hooks.PreToolUse[].hooks[].comman
 eq "upgrade has one guard entry" "$(jq -c '[.hooks.PreToolUse[].hooks[].command | select(test("guard.sh"))] | length' <<<"$us")" 1
 eq "upgrade has one on-command entry" "$(jq -c '[.hooks.UserPromptExpansion[].hooks[].command] | length' <<<"$us")" 1
 eq "upgrade adds the prompt hook" "$(jq -c '[.hooks.UserPromptSubmit[].hooks[].command | select(test("on-prompt.sh"))] | length' <<<"$us")" 1
+W=$(mktemp -d "$X/sc.XXXXXX"); (cd "$W" && git init -q)
+has "install warns when shellcheck is missing" "$(SHELLCHECK=/no/such/shellcheck "$KIT/install.sh" "$W" 2>&1)" "shellcheck is not installed"
+eq "…and only then" "$(cd "$W" && "$KIT/install.sh" . 2>&1 | grep -c 'shellcheck is not installed')" 0
 "$KIT/install.sh" "$U" >/dev/null
 eq "install is idempotent" "$(cat "$U/.claude/settings.json")" "$us"
 

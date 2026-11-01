@@ -16,6 +16,12 @@ cd "$1"
 repo=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "$1 is not inside a git repository" >&2; exit 1; }
 cd "$repo"
 command -v jq >/dev/null 2>&1 || { echo "jq is required (the hooks use it): install jq first" >&2; exit 1; }
+# the kit's test run lints every kit script with shellcheck; the kit itself runs without it
+if ! command -v "${SHELLCHECK:-shellcheck}" >/dev/null 2>&1; then
+	echo "WARNING shellcheck is not installed. The kit runs without it, but its test run" >&2
+	echo "        (.claude/scripts/tests/run.sh in the agent-loop repo) fails without it. If you change" >&2
+	echo "        or test the kit: apt install shellcheck, or brew install shellcheck" >&2
+fi
 
 ts=$(date +%Y%m%d-%H%M%S)
 bk=".claude/agent-loop-backup-$ts"
